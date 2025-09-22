@@ -45,7 +45,9 @@ class VirtualController:
     """Handles Xbox 360 controller simulation using vgamepad."""
     
     def __init__(self):
-        """Initialize the virtual Xbox 360 controller."""
+        """
+        Initialize the virtual Xbox 360 controller.
+        """
         try:
             self.gamepad = vg.VX360Gamepad()
             self.connected = True
@@ -58,6 +60,8 @@ class VirtualController:
     def is_connected(self) -> bool:
         """Check if the virtual controller is connected."""
         return self.connected and self.gamepad is not None
+    
+
     
     def press_button(self, button: XboxButton, duration: float = 0.1) -> bool:
         """
@@ -130,6 +134,8 @@ class VirtualController:
         except Exception as e:
             print(f"Error pressing button {button.value}: {e}")
             return False
+    
+
     
     def press_button_combo(self, buttons: list, duration: float = 0.1) -> bool:
         """

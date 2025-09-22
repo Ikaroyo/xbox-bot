@@ -13,6 +13,7 @@ from datetime import datetime
 
 
 @dataclass
+@dataclass
 class DetectionRule:
     """Data class for detection rules."""
     name: str
@@ -352,7 +353,7 @@ class ConfigManager:
         """Get current detection rules."""
         return self.current_config.detection_rules
     
-    def add_detection_rule(self, name: str, template: str, confidence: float, action: str) -> bool:
+    def add_detection_rule(self, name: str, template: str, confidence: float, action: str, enabled: bool = True) -> bool:
         """Add a new detection rule."""
         # Check for duplicate names
         for rule in self.current_config.detection_rules:
@@ -365,7 +366,7 @@ class ConfigManager:
             template=template,
             confidence=confidence,
             action=action,
-            enabled=True
+            enabled=enabled
         )
         
         self.current_config.detection_rules.append(rule)
@@ -379,13 +380,15 @@ class ConfigManager:
                 return True
         return False
     
-    def update_detection_rule(self, name: str, template: str, confidence: float, action: str) -> bool:
+    def update_detection_rule(self, name: str, template: str, confidence: float, action: str, enabled: bool = None) -> bool:
         """Update an existing detection rule."""
         for rule in self.current_config.detection_rules:
             if rule.name == name:
                 rule.template = template
                 rule.confidence = confidence
                 rule.action = action
+                if enabled is not None:
+                    rule.enabled = enabled
                 return True
         return False
     

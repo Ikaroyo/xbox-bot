@@ -15,6 +15,7 @@ import time
 import os
 from typing import List, Dict, Optional
 import queue
+from PIL import Image, ImageTk
 
 from modules.window_manager import WindowManager
 from modules.image_detector import ImageDetector
@@ -130,17 +131,6 @@ class StumbleBotApp:
         )
         help_btn.pack(side="right", padx=(5, 10), pady=10)
         
-        # Debug mode button
-        self.debug_mode_btn = ctk.CTkButton(
-            control_frame,
-            text="Debug Mode",
-            command=self._toggle_debug_mode,
-            width=100
-        )
-        self.debug_mode_btn.pack(side="right", padx=(5, 10), pady=10)
-        
-        self.debug_mode_enabled = False
-        
         # Log section
         log_label = ctk.CTkLabel(run_frame, text="Bot Logs:", font=ctk.CTkFont(size=14, weight="bold"))
         log_label.pack(anchor="w", padx=10, pady=(10, 5))
@@ -214,10 +204,10 @@ class StumbleBotApp:
             window_frame,
             text="Test Window Detection",
             command=self._test_window_detection,
-            width=200
+            width=150
         )
-        test_window_btn.pack(pady=10)
-    
+        test_window_btn.pack(side="left", pady=10, padx=5)
+        
     def _setup_detection_rules_section(self, parent):
         """Setup detection rules management section."""
         # Detection Rules
@@ -232,14 +222,35 @@ class StumbleBotApp:
         rules_control_frame = ctk.CTkFrame(rules_frame)
         rules_control_frame.pack(fill="x", padx=10, pady=5)
         
+        # Rules list container
+        rules_list_frame = ctk.CTkFrame(rules_control_frame)
+        rules_list_frame.pack(side="left", fill="both", expand=True)
+        
         # Rules listbox
-        self.rules_listbox = tk.Listbox(rules_control_frame, height=6, font=("Consolas", 10))
-        self.rules_listbox.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        self.rules_listbox = tk.Listbox(rules_list_frame, height=6, font=("Consolas", 10))
+        self.rules_listbox.pack(fill="both", expand=True, padx=5, pady=5)
         self.rules_listbox.bind('<<ListboxSelect>>', self._on_rule_select)
+        
+        # Template preview frame
+        preview_frame = ctk.CTkFrame(rules_control_frame)
+        preview_frame.pack(side="right", fill="y", padx=(10, 0))
+        
+        preview_label = ctk.CTkLabel(preview_frame, text="Template Preview")
+        preview_label.pack(pady=(5, 0))
+        
+        # Preview image label (placeholder)
+        self.preview_image_label = ctk.CTkLabel(
+            preview_frame, 
+            text="No template\nselected", 
+            width=120, 
+            height=120,
+            fg_color="gray20"
+        )
+        self.preview_image_label.pack(pady=5, padx=5)
         
         # Rules buttons
         rules_btn_frame = ctk.CTkFrame(rules_control_frame)
-        rules_btn_frame.pack(side="right", fill="y")
+        rules_btn_frame.pack(side="right", fill="y", padx=(10, 0))
         
         ctk.CTkButton(rules_btn_frame, text="Add Rule", command=self._add_rule, width=100).pack(pady=2)
         ctk.CTkButton(rules_btn_frame, text="Edit Rule", command=self._edit_rule, width=100).pack(pady=2)
@@ -261,6 +272,11 @@ class StumbleBotApp:
         ctk.CTkLabel(name_frame, text="Rule Name:", width=120).pack(side="left", padx=5)
         self.rule_name_entry = ctk.CTkEntry(name_frame, placeholder_text="MainMenu")
         self.rule_name_entry.pack(side="left", fill="x", expand=True, padx=5)
+        
+        # Rule enabled checkbox
+        self.rule_enabled_var = ctk.BooleanVar(value=True)
+        enabled_cb = ctk.CTkCheckBox(name_frame, text="Enabled", variable=self.rule_enabled_var)
+        enabled_cb.pack(side="right", padx=5)
         
         # Template name
         template_frame = ctk.CTkFrame(details_frame)
@@ -407,8 +423,12 @@ class StumbleBotApp:
         """Setup the Joystick tab with manual controls."""
         joystick_frame = self.tab_view.tab("Joystick")
         
+        # Create scrollable frame to handle all content
+        scroll_frame = ctk.CTkScrollableFrame(joystick_frame, width=750, height=550)
+        scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
         # Timer settings
-        timer_frame = ctk.CTkFrame(joystick_frame)
+        timer_frame = ctk.CTkFrame(scroll_frame)
         timer_frame.pack(fill="x", padx=10, pady=10)
         
         timer_label = ctk.CTkLabel(timer_frame, text="Action Timer", 
@@ -433,7 +453,7 @@ class StumbleBotApp:
         auto_focus_cb.pack(pady=5)
         
         # Controller buttons
-        buttons_frame = ctk.CTkFrame(joystick_frame)
+        buttons_frame = ctk.CTkFrame(scroll_frame)
         buttons_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         
         buttons_label = ctk.CTkLabel(buttons_frame, text="Xbox Controller", 
@@ -444,7 +464,7 @@ class StumbleBotApp:
         self._setup_controller_buttons(buttons_frame)
         
         # Sequence testing section
-        sequence_test_frame = ctk.CTkFrame(joystick_frame)
+        sequence_test_frame = ctk.CTkFrame(scroll_frame)
         sequence_test_frame.pack(fill="x", padx=10, pady=(10, 0))
         
         sequence_test_label = ctk.CTkLabel(sequence_test_frame, text="Test Sequence", 
@@ -520,6 +540,42 @@ class StumbleBotApp:
         
         ctk.CTkButton(dpad_frame, text="↓", command=lambda: self._delayed_button_press("DPAD_DOWN"), 
                      width=50, height=50).grid(row=2, column=1, padx=2, pady=2)
+        
+        # Left Stick Movement
+        stick_frame = ctk.CTkFrame(parent)
+        stick_frame.pack(pady=10)
+        
+        stick_label = ctk.CTkLabel(stick_frame, text="Left Stick Movement", 
+                                  font=ctk.CTkFont(size=14, weight="bold"))
+        stick_label.pack(pady=(5, 10))
+        
+        # Stick movement grid
+        stick_grid_frame = ctk.CTkFrame(stick_frame)
+        stick_grid_frame.pack(pady=5)
+        
+        # Top row: UP-LEFT, UP, UP-RIGHT
+        ctk.CTkButton(stick_grid_frame, text="↖", command=lambda: self._delayed_button_press("STICK_UP_LEFT"), 
+                     width=60, height=40).grid(row=0, column=0, padx=2, pady=2)
+        ctk.CTkButton(stick_grid_frame, text="↑", command=lambda: self._delayed_button_press("STICK_UP"), 
+                     width=60, height=40).grid(row=0, column=1, padx=2, pady=2)
+        ctk.CTkButton(stick_grid_frame, text="↗", command=lambda: self._delayed_button_press("STICK_UP_RIGHT"), 
+                     width=60, height=40).grid(row=0, column=2, padx=2, pady=2)
+        
+        # Middle row: LEFT, CENTER, RIGHT
+        ctk.CTkButton(stick_grid_frame, text="←", command=lambda: self._delayed_button_press("STICK_LEFT"), 
+                     width=60, height=40).grid(row=1, column=0, padx=2, pady=2)
+        ctk.CTkButton(stick_grid_frame, text="●", command=lambda: self._delayed_button_press("STICK_CENTER"), 
+                     width=60, height=40).grid(row=1, column=1, padx=2, pady=2)
+        ctk.CTkButton(stick_grid_frame, text="→", command=lambda: self._delayed_button_press("STICK_RIGHT"), 
+                     width=60, height=40).grid(row=1, column=2, padx=2, pady=2)
+        
+        # Bottom row: DOWN-LEFT, DOWN, DOWN-RIGHT
+        ctk.CTkButton(stick_grid_frame, text="↙", command=lambda: self._delayed_button_press("STICK_DOWN_LEFT"), 
+                     width=60, height=40).grid(row=2, column=0, padx=2, pady=2)
+        ctk.CTkButton(stick_grid_frame, text="↓", command=lambda: self._delayed_button_press("STICK_DOWN"), 
+                     width=60, height=40).grid(row=2, column=1, padx=2, pady=2)
+        ctk.CTkButton(stick_grid_frame, text="↘", command=lambda: self._delayed_button_press("STICK_DOWN_RIGHT"), 
+                     width=60, height=40).grid(row=2, column=2, padx=2, pady=2)
         
         # Additional buttons
         extra_frame = ctk.CTkFrame(parent)
@@ -680,6 +736,10 @@ class StumbleBotApp:
             else:
                 debug_info += f"\nBot Status: Not created yet\n"
             
+            # Controller and input mode info
+            debug_info += f"\nController Status:\n"
+            debug_info += f"  Connected: {self.virtual_controller.is_connected()}\n"
+            
             self._add_log(debug_info)
             
         except Exception as e:
@@ -704,8 +764,10 @@ If the bot is not detecting templates:
 
 3. CHECK WINDOW:
    - Use "Test Window Detection" to verify target window
+   - Use "Test Background Input" to verify input injection works
    - Make sure window title is exactly correct
    - Window should be visible and not minimized
+   - If background input fails, try focusing the window first
 
 4. TESTING:
    - Use the test template: run 'python create_test_template.py'
@@ -726,31 +788,16 @@ If the bot is not detecting templates:
    - Smaller templates = faster detection
    - Avoid overlapping elements in templates
 
+8. BACKGROUND INPUT:
+   - Enable "Background input" in Bot Settings to control game without focusing
+   - Uses keyboard simulation to send controller input directly to target window
+   - Button mapping: A=Space, B=X, Arrows=D-Pad, WASD=Analog stick movement
+   - Works with games that accept keyboard input when not focused
+   - Allows you to work in other applications while bot runs
+
 Click "Debug Info" for current status information.
 """
         self._add_log(help_text)
-    
-    def _toggle_debug_mode(self):
-        """Toggle debug mode for template detection."""
-        self.debug_mode_enabled = not self.debug_mode_enabled
-        
-        if self.debug_mode_enabled:
-            self.debug_mode_btn.configure(text="Debug ON", fg_color="orange")
-            self._add_log("=== DEBUG MODE ENABLED ===")
-            self._add_log("- Screenshots will be saved when templates not found")
-            self._add_log("- More detailed confidence information will be shown")
-            self._add_log("- Check 'debug_screenshots/' folder for saved images")
-            
-            # Enable debug in bot thread if running
-            if self.bot_thread and hasattr(self.bot_thread, 'enable_debug_screenshots'):
-                self.bot_thread.enable_debug_screenshots(True)
-        else:
-            self.debug_mode_btn.configure(text="Debug Mode", fg_color=None)
-            self._add_log("=== DEBUG MODE DISABLED ===")
-            
-            # Disable debug in bot thread if running
-            if self.bot_thread and hasattr(self.bot_thread, 'enable_debug_screenshots'):
-                self.bot_thread.enable_debug_screenshots(False)
     
     def _update_confidence_label(self, value):
         """Update confidence slider label."""
@@ -762,6 +809,63 @@ Click "Debug Info" for current status information.
         if selection:
             self.selected_rule_index = selection[0]
             self._load_rule_to_details(self.selected_rule_index)
+            self._update_template_preview(self.selected_rule_index)
+    
+    def _update_template_preview(self, rule_index: int):
+        """Update the template preview image."""
+        try:
+            if 0 <= rule_index < len(self.current_rules):
+                rule = self.current_rules[rule_index]
+                template_path = os.path.join("templates", rule.template)
+                
+                # Ensure .png extension
+                if not template_path.endswith('.png'):
+                    template_path += '.png'
+                
+                if os.path.exists(template_path):
+                    # Load and resize image for preview
+                    img = Image.open(template_path)
+                    
+                    # Calculate size maintaining aspect ratio
+                    max_size = 100
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    
+                    # Convert to PhotoImage
+                    photo = ImageTk.PhotoImage(img)
+                    
+                    # Update the preview label
+                    self.preview_image_label.configure(
+                        image=photo, 
+                        text="",
+                        fg_color="transparent"
+                    )
+                    # Keep a reference to prevent garbage collection
+                    self.preview_image_label.image = photo
+                else:
+                    # Template file not found
+                    self.preview_image_label.configure(
+                        image=None,
+                        text=f"Template\n'{rule.template}'\nnot found",
+                        fg_color="red"
+                    )
+                    self.preview_image_label.image = None
+            else:
+                # No rule selected
+                self.preview_image_label.configure(
+                    image=None,
+                    text="No template\nselected",
+                    fg_color="gray20"
+                )
+                self.preview_image_label.image = None
+                
+        except Exception as e:
+            # Error loading image
+            self.preview_image_label.configure(
+                image=None,
+                text=f"Error loading\ntemplate:\n{str(e)[:20]}...",
+                fg_color="red"
+            )
+            self.preview_image_label.image = None
     
     def _load_rule_to_details(self, index: int):
         """Load selected rule data to detail entries."""
@@ -775,6 +879,9 @@ Click "Debug Info" for current status information.
             self.template_name_entry.insert(0, rule.template)
             
             self.confidence_slider.set(rule.confidence)
+            
+            # Set enabled state
+            self.rule_enabled_var.set(rule.enabled)
             
             # Check if action is a sequence or simple button
             action = rule.action
@@ -808,6 +915,8 @@ Click "Debug Info" for current status information.
                     window = self.window_manager.select_window(window_title)
                     if window:
                         self.window_manager.focus_window(window)
+                        time.sleep(0.1)  # Give window time to focus
+                        self._add_log(f"Focused window: {window['title']}")
                 
                 # Execute button press
                 button = self.virtual_controller.get_button_from_string(button_name)
@@ -815,6 +924,11 @@ Click "Debug Info" for current status information.
                     success = self.virtual_controller.press_button(button)
                     if success:
                         self._add_log(f"Joystick action executed: {button_name}")
+                        
+                        # Wait additional time to let user observe the reaction
+                        self._add_log(f"Waiting {delay}s to observe target window reaction...")
+                        time.sleep(delay)
+                        self._add_log(f"Joystick action complete: {button_name}")
                     else:
                         self._add_log(f"Failed to execute joystick action: {button_name}")
                 else:
@@ -850,11 +964,18 @@ Click "Debug Info" for current status information.
                     window = self.window_manager.select_window(window_title)
                     if window:
                         self.window_manager.focus_window(window)
+                        time.sleep(0.1)  # Give window time to focus
+                        self._add_log(f"Focused window: {window['title']}")
                 
                 # Execute sequence
                 success = self.virtual_controller.execute_sequence(sequence)
                 if success:
                     self._add_log(f"Sequence executed successfully: {sequence}")
+                    
+                    # Wait additional time to let user observe the reaction
+                    self._add_log(f"Waiting {delay}s to observe target window reaction...")
+                    time.sleep(delay)
+                    self._add_log(f"Sequence test complete: {sequence}")
                 else:
                     self._add_log(f"Failed to execute sequence: {sequence}")
                     
@@ -963,8 +1084,22 @@ Click "Debug Info" for current status information.
         self.current_rules = self.config_manager.get_detection_rules()
         
         for rule in self.current_rules:
-            status = "✓" if rule.enabled else "✗"
-            self.rules_listbox.insert("end", f"{status} {rule.name} -> {rule.action}")
+            # State indicator
+            state = "✓ Enabled" if rule.enabled else "✗ Disabled"
+            
+            # Format: State - Name - Template - Action
+            display_text = f"{state} - {rule.name} - {rule.template} - {rule.action}"
+            
+            self.rules_listbox.insert("end", display_text)
+        
+        # Clear template preview
+        if hasattr(self, 'preview_image_label'):
+            self.preview_image_label.configure(
+                image=None,
+                text="No template\nselected",
+                fg_color="gray20"
+            )
+            self.preview_image_label.image = None
     
     # Rules management methods
     def _add_rule(self):
@@ -1044,6 +1179,9 @@ Click "Debug Info" for current status information.
             else:  # sequence
                 action = self.sequence_entry.get().strip()
             
+            # Get enabled state
+            enabled = self.rule_enabled_var.get()
+            
             # Validate inputs
             if not name:
                 messagebox.showerror("Invalid Input", "Rule name is required")
@@ -1077,18 +1215,18 @@ Click "Debug Info" for current status information.
             if self.selected_rule_index is not None:
                 # Update existing rule
                 old_rule = self.current_rules[self.selected_rule_index]
-                if self.config_manager.update_detection_rule(old_rule.name, template, confidence, action):
+                if self.config_manager.update_detection_rule(old_rule.name, template, confidence, action, enabled):
                     # If name changed, we need to remove old and add new
                     if old_rule.name != name:
                         self.config_manager.remove_detection_rule(old_rule.name)
-                        self.config_manager.add_detection_rule(name, template, confidence, action)
+                        self.config_manager.add_detection_rule(name, template, confidence, action, enabled)
                     
                     self._add_log(f"Rule '{name}' updated")
                 else:
                     self._add_log(f"Failed to update rule '{name}'")
             else:
                 # Add new rule
-                if self.config_manager.add_detection_rule(name, template, confidence, action):
+                if self.config_manager.add_detection_rule(name, template, confidence, action, enabled):
                     self._add_log(f"Rule '{name}' added")
                 else:
                     self._add_log(f"Failed to add rule '{name}' (name may already exist)")
