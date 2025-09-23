@@ -339,3 +339,160 @@ class ImageDetector:
         except Exception as e:
             print(f"Error visualizing match: {e}")
             return screenshot
+
+
+class TemplateManager:
+    """Manages template files and provides UI integration support."""
+    
+    def __init__(self, image_detector: ImageDetector):
+        self.image_detector = image_detector
+        self.templates_dir = image_detector.templates_dir
+    
+    def get_available_templates(self) -> List[str]:
+        """Get list of available template files."""
+        templates = []
+        if os.path.exists(self.templates_dir):
+            for file in os.listdir(self.templates_dir):
+                if file.endswith('.png'):
+                    templates.append(file)
+        return sorted(templates)
+    
+    def template_exists(self, template_name: str) -> bool:
+        """Check if a template file exists."""
+        if not template_name.endswith('.png'):
+            template_name += '.png'
+        template_path = os.path.join(self.templates_dir, template_name)
+        return os.path.exists(template_path)
+    
+    def get_template_info(self, template_name: str) -> Dict:
+        """Get detailed information about a template."""
+        if not template_name.endswith('.png'):
+            template_name += '.png'
+        template_path = os.path.join(self.templates_dir, template_name)
+        
+        info = {
+            'name': template_name,
+            'path': template_path,
+            'exists': os.path.exists(template_path),
+            'size': None,
+            'dimensions': None,
+            'file_size': None,
+            'modified': None
+        }
+        
+        if info['exists']:
+            try:
+                # Get file info
+                stat = os.stat(template_path)
+                info['file_size'] = stat.st_size
+                info['modified'] = stat.st_mtime
+                
+                # Get image dimensions
+                with Image.open(template_path) as img:
+                    info['dimensions'] = img.size
+                    info['size'] = f"{img.size[0]}x{img.size[1]}"
+            except Exception as e:
+                print(f"Error getting template info: {e}")
+        
+        return info
+    
+    def create_thumbnail(self, template_name: str, max_size: int = 100) -> Optional[Image.Image]:
+        """Create a thumbnail of the template image."""
+        try:
+            if not template_name.endswith('.png'):
+                template_name += '.png'
+            template_path = os.path.join(self.templates_dir, template_name)
+            
+            if not os.path.exists(template_path):
+                return None
+            
+            with Image.open(template_path) as img:
+                # Create thumbnail maintaining aspect ratio
+                img_copy = img.copy()
+                img_copy.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                return img_copy
+                
+        except Exception as e:
+            print(f"Error creating thumbnail: {e}")
+            return None
+    
+    def validate_template_file(self, template_path: str) -> Tuple[bool, str]:
+        """
+        Validate a template file.
+        
+        Returns:
+            Tuple of (is_valid: bool, error_message: str)
+        """
+        try:
+            if not os.path.exists(template_path):
+                return False, "Template file does not exist"
+            
+            # Check file size
+            file_size = os.path.getsize(template_path)
+            if file_size == 0:
+                return False, "Template file is empty"
+            
+            if file_size > 10 * 1024 * 1024:  # 10MB limit
+                return False, "Template file is too large (max 10MB)"
+            
+            # Check if it's a valid image
+            try:
+                with Image.open(template_path) as img:
+                    # Check dimensions
+                    width, height = img.size
+                    if width < 5 or height < 5:
+                        return False, "Template is too small (minimum 5x5 pixels)"
+                    
+                    if width > 2000 or height > 2000:
+                        return False, "Template is too large (maximum 2000x2000 pixels)"
+                    
+                    # Check format
+                    if img.format not in ['PNG']:
+                        return False, "Template must be in PNG format"
+                    
+                    return True, ""
+                    
+            except Exception as e:
+                return False, f"Invalid image file: {e}"
+                
+        except Exception as e:
+            return False, f"Error validating template: {e}"
+    
+    def test_template_detection(self, template_name: str, screenshot: np.ndarray, confidence_levels: List[float] = None) -> Dict:
+        """
+        Test template detection at various confidence levels.
+        
+        Returns:
+            Dictionary with test results
+        """
+        if confidence_levels is None:
+            confidence_levels = [0.5, 0.6, 0.7, 0.8, 0.9]
+        
+        if not template_name.endswith('.png'):
+            template_name = template_name[:-4]  # Remove .png for detector
+        
+        results = {
+            'template': template_name,
+            'found_at_levels': [],
+            'best_confidence': 0.0,
+            'recommended_confidence': 0.5
+        }
+        
+        try:
+            for confidence in confidence_levels:
+                match = self.image_detector.find_template(screenshot, template_name, confidence)
+                if match:
+                    results['found_at_levels'].append({
+                        'threshold': confidence,
+                        'actual_confidence': match['confidence']
+                    })
+                    results['best_confidence'] = max(results['best_confidence'], match['confidence'])
+            
+            # Calculate recommended confidence
+            if results['found_at_levels']:
+                results['recommended_confidence'] = max(0.5, results['best_confidence'] - 0.1)
+            
+        except Exception as e:
+            results['error'] = str(e)
+        
+        return results

@@ -17,24 +17,11 @@
   },
   "detection_rules": [
     {
-      "name": "ready",
-      "template": "ready.png",
-      "confidence": 0.8333333333333334,
-      "action": "Y",
-      "enabled": true
-    },
-    {
-      "name": "game_running",
-      "template": "game_running.png",
-      "confidence": 0.8333333333333334,
-      "action": "STICK_UP:3,STICK_RIGHT:0.5,STICK_LEFT:1",
-      "enabled": true
-    },
-    {
       "name": "lose",
       "template": "lose.png",
       "confidence": 0.8333333333333334,
       "action": "START",
+      "input_mode": "controller",
       "enabled": true
     },
     {
@@ -42,6 +29,7 @@
       "template": "claim.png",
       "confidence": 0.8333333333333334,
       "action": "A",
+      "input_mode": "controller",
       "enabled": true
     },
     {
@@ -49,8 +37,41 @@
       "template": "error.png",
       "confidence": 0.8333333333333334,
       "action": "A",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "logged",
+      "template": "logged.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "push",
+      "template": "push.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "game_running",
+      "template": "game_running.png",
+      "confidence": 0.8,
+      "action": "STICK_UP:3,A:1",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "ready",
+      "template": "ready.png",
+      "confidence": 0.8,
+      "action": "Y",
+      "input_mode": "controller",
       "enabled": true
     }
   ],
-  "last_saved": "2025-09-22T17:40:46.672318"
+  "last_saved": "2025-09-23T00:15:04.575402"
 }

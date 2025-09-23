@@ -8,6 +8,7 @@ CustomTkinter-based interface with three tabs:
 """
 
 import customtkinter as ctk
+from customtkinter import CTkImage
 import tkinter as tk
 from tkinter import messagebox, filedialog, simpledialog
 import threading
@@ -18,10 +19,10 @@ import queue
 from PIL import Image, ImageTk
 
 from modules.window_manager import WindowManager
-from modules.image_detector import ImageDetector
+from modules.image_detector import ImageDetector, TemplateManager
 from modules.virtual_controller import VirtualController, XboxButton
 from modules.bot_thread import BotThread
-from modules.config_manager import ConfigManager
+from modules.config_manager import ConfigManager, RulesManager
 
 
 class StumbleBotApp:
@@ -35,6 +36,10 @@ class StumbleBotApp:
         self.virtual_controller = VirtualController()
         self.config_manager = ConfigManager()
         self.bot_thread = None
+        
+        # Initialize specialized managers
+        self.rules_manager = RulesManager(self.config_manager)
+        self.template_manager = TemplateManager(self.image_detector)
         
         # GUI state
         self.log_queue = queue.Queue()
@@ -218,18 +223,64 @@ class StumbleBotApp:
                                   font=ctk.CTkFont(size=16, weight="bold"))
         rules_label.pack(pady=(10, 5))
         
-        # Rules list and controls
+        # Rules table and controls
         rules_control_frame = ctk.CTkFrame(rules_frame)
-        rules_control_frame.pack(fill="x", padx=10, pady=5)
+        rules_control_frame.pack(fill="both", expand=True, padx=10, pady=5)
         
-        # Rules list container
-        rules_list_frame = ctk.CTkFrame(rules_control_frame)
-        rules_list_frame.pack(side="left", fill="both", expand=True)
+        # Rules table container
+        table_frame = ctk.CTkFrame(rules_control_frame)
+        table_frame.pack(side="left", fill="both", expand=True)
         
-        # Rules listbox
-        self.rules_listbox = tk.Listbox(rules_list_frame, height=6, font=("Consolas", 10))
-        self.rules_listbox.pack(fill="both", expand=True, padx=5, pady=5)
-        self.rules_listbox.bind('<<ListboxSelect>>', self._on_rule_select)
+        # Create Treeview for rules table
+        import tkinter.ttk as ttk
+        
+        # Style configuration for the treeview
+        style = ttk.Style()
+        style.theme_use('clam')
+        style.configure("Treeview", background="#2b2b2b", foreground="white", fieldbackground="#2b2b2b")
+        style.configure("Treeview.Heading", background="#404040", foreground="white", font=("Arial", 10, "bold"))
+        style.map("Treeview", background=[('selected', '#404040')])
+        
+        # Create scrollable frame for table
+        table_scroll_frame = tk.Frame(table_frame, bg="#2b2b2b")
+        table_scroll_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Rules table with columns - updated to include input mode
+        self.rules_table = ttk.Treeview(table_scroll_frame, columns=('enabled', 'name', 'template', 'input_mode', 'action', 'preview'), show='tree headings', height=15)
+        
+        # Configure columns
+        self.rules_table.column('#0', width=0, stretch=False)  # Hide tree column
+        self.rules_table.column('enabled', width=80, anchor='center')
+        self.rules_table.column('name', width=120, anchor='w')
+        self.rules_table.column('template', width=120, anchor='w')
+        self.rules_table.column('input_mode', width=80, anchor='center')
+        self.rules_table.column('action', width=100, anchor='w')
+        self.rules_table.column('preview', width=60, anchor='center')
+        
+        # Configure headings
+        self.rules_table.heading('enabled', text='Enabled', anchor='center')
+        self.rules_table.heading('name', text='Name', anchor='w')
+        self.rules_table.heading('template', text='Template', anchor='w')
+        self.rules_table.heading('input_mode', text='Input', anchor='center')
+        self.rules_table.heading('action', text='Action', anchor='w')
+        self.rules_table.heading('preview', text='Preview', anchor='center')
+        
+        # Add scrollbars
+        v_scrollbar = ttk.Scrollbar(table_scroll_frame, orient="vertical", command=self.rules_table.yview)
+        h_scrollbar = ttk.Scrollbar(table_scroll_frame, orient="horizontal", command=self.rules_table.xview)
+        self.rules_table.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        
+        # Pack table and scrollbars
+        self.rules_table.grid(row=0, column=0, sticky='nsew')
+        v_scrollbar.grid(row=0, column=1, sticky='ns')
+        h_scrollbar.grid(row=1, column=0, sticky='ew')
+        
+        table_scroll_frame.grid_rowconfigure(0, weight=1)
+        table_scroll_frame.grid_columnconfigure(0, weight=1)
+        
+        # Bind events
+        self.rules_table.bind('<<TreeviewSelect>>', self._on_rule_table_select)
+        self.rules_table.bind('<Double-1>', self._on_rule_table_double_click)
         
         # Template preview frame
         preview_frame = ctk.CTkFrame(rules_control_frame)
@@ -238,7 +289,7 @@ class StumbleBotApp:
         preview_label = ctk.CTkLabel(preview_frame, text="Template Preview")
         preview_label.pack(pady=(5, 0))
         
-        # Preview image label (placeholder)
+        # Preview image label
         self.preview_image_label = ctk.CTkLabel(
             preview_frame, 
             text="No template\nselected", 
@@ -256,6 +307,7 @@ class StumbleBotApp:
         ctk.CTkButton(rules_btn_frame, text="Edit Rule", command=self._edit_rule, width=100).pack(pady=2)
         ctk.CTkButton(rules_btn_frame, text="Delete Rule", command=self._delete_rule, width=100).pack(pady=2)
         ctk.CTkButton(rules_btn_frame, text="Capture Template", command=self._capture_template, width=100).pack(pady=2)
+        ctk.CTkButton(rules_btn_frame, text="Import Templates", command=self._import_templates, width=100).pack(pady=2)
         
         # Rule details
         self._setup_rule_details_section(rules_frame)
@@ -307,6 +359,16 @@ class StumbleBotApp:
         
         self.confidence_slider.configure(command=self._update_confidence_label)
         
+        # Input mode selection
+        input_mode_frame = ctk.CTkFrame(details_frame)
+        input_mode_frame.pack(fill="x", padx=5, pady=2)
+        
+        ctk.CTkLabel(input_mode_frame, text="Input Mode:", width=120).pack(side="left", padx=5)
+        self.input_mode_combobox = ctk.CTkComboBox(input_mode_frame, values=["controller", "keyboard", "mouse"])
+        self.input_mode_combobox.pack(side="left", fill="x", expand=True, padx=5)
+        self.input_mode_combobox.set("controller")
+        self.input_mode_combobox.configure(command=self._on_input_mode_change)
+        
         # Action combobox and sequence
         action_frame = ctk.CTkFrame(details_frame)
         action_frame.pack(fill="x", padx=5, pady=2)
@@ -333,8 +395,10 @@ class StumbleBotApp:
         self.simple_action_frame = ctk.CTkFrame(details_frame)
         self.simple_action_frame.pack(fill="x", padx=5, pady=2)
         
-        ctk.CTkLabel(self.simple_action_frame, text="Button:", width=120).pack(side="left", padx=5)
+        self.simple_action_label = ctk.CTkLabel(self.simple_action_frame, text="Button:", width=120)
+        self.simple_action_label.pack(side="left", padx=5)
         
+        # Controller actions by default
         available_actions = [button.value for button in XboxButton]
         self.action_combobox = ctk.CTkComboBox(self.simple_action_frame, values=available_actions)
         self.action_combobox.pack(side="left", fill="x", expand=True, padx=5)
@@ -345,7 +409,7 @@ class StumbleBotApp:
         
         ctk.CTkLabel(self.sequence_action_frame, text="Sequence:", width=120).pack(side="left", padx=5)
         self.sequence_entry = ctk.CTkEntry(self.sequence_action_frame, 
-                                          placeholder_text="STICK_UP:2,STICK_LEFT:1.5,STICK_RIGHT:1")
+                                          placeholder_text="Button:duration,Button:duration (e.g., A:0.1,B:0.2)")
         self.sequence_entry.pack(side="left", fill="x", expand=True, padx=5)
         
         # Sequence help button
@@ -418,6 +482,7 @@ class StumbleBotApp:
         ctk.CTkButton(btn_frame, text="Load Config", command=self._load_config, width=120).pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="Export Config", command=self._export_config, width=120).pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="Import Config", command=self._import_config, width=120).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Template Stats", command=self._show_template_stats, width=120).pack(side="left", padx=5)
     
     def _setup_joystick_tab(self):
         """Setup the Joystick tab with manual controls."""
@@ -619,7 +684,8 @@ class StumbleBotApp:
                 self.window_manager,
                 self.image_detector,
                 self.virtual_controller,
-                self._add_log
+                self._add_log,
+                self.config_manager  # Add config manager for cycle tracking
             )
             
             # Configure bot
@@ -715,11 +781,24 @@ class StumbleBotApp:
             templates_dir = "templates"
             if os.path.exists(templates_dir):
                 template_files = [f for f in os.listdir(templates_dir) if f.endswith('.png')]
-                debug_info += f"\nTemplate files found: {len(template_files)}\n"
-                for template in template_files:
-                    debug_info += f"  - {template}\n"
+                debug_info += f"\nTemplate Management:\n"
+                debug_info += f"Template files found: {len(template_files)}\n"
+                debug_info += f"Templates directory: {os.path.abspath(templates_dir)}\n"
+                debug_info += f"✅ Unlimited templates supported - add as many as you need!\n"
+                
+                if len(template_files) > 0:
+                    debug_info += f"\nTemplate Files ({len(template_files)} total):\n"
+                    for i, template in enumerate(template_files, 1):
+                        file_size = os.path.getsize(os.path.join(templates_dir, template))
+                        debug_info += f"  {i:3d}. {template} ({file_size} bytes)\n"
+                        if i >= 20:  # Show first 20, then summarize
+                            remaining = len(template_files) - 20
+                            if remaining > 0:
+                                debug_info += f"  ... and {remaining} more templates\n"
+                            break
             else:
                 debug_info += f"\nTemplates directory not found: {templates_dir}\n"
+                debug_info += f"💡 Create the templates folder and add your template images\n"
             
             # Bot status
             if self.bot_thread and hasattr(self.bot_thread, 'get_status'):
@@ -756,11 +835,13 @@ If the bot is not detecting templates:
    - Click "Debug Info" to see if template files exist
    - Templates must be in the 'templates/' folder
    - Use "Capture Template" to create templates
+   - NO LIMIT on number of templates - add as many as you need!
 
 2. CHECK RULES:
    - Make sure you have at least one enabled rule
    - Verify template names match actual files
    - Try lowering confidence threshold (0.7-0.8)
+   - NO LIMIT on number of rules - create unlimited detection rules!
 
 3. CHECK WINDOW:
    - Use "Test Window Detection" to verify target window
@@ -803,13 +884,62 @@ Click "Debug Info" for current status information.
         """Update confidence slider label."""
         self.confidence_label.configure(text=f"{value:.2f}")
     
-    def _on_rule_select(self, event):
-        """Handle rule selection in listbox."""
-        selection = self.rules_listbox.curselection()
+    def _on_rule_table_select(self, event):
+        """Handle rule selection in table."""
+        selection = self.rules_table.selection()
         if selection:
-            self.selected_rule_index = selection[0]
-            self._load_rule_to_details(self.selected_rule_index)
-            self._update_template_preview(self.selected_rule_index)
+            item = selection[0]
+            # Get the rule index from the item text
+            rule_index_text = self.rules_table.item(item, 'text')
+            if rule_index_text.isdigit():
+                rule_index = int(rule_index_text)
+                if 0 <= rule_index < len(self.current_rules):
+                    self.selected_rule_index = rule_index
+                    self._load_rule_to_details(rule_index)
+                    self._update_template_preview(rule_index)
+                    self._add_log(f"Selected rule {rule_index + 1}: '{self.current_rules[rule_index].name}'")
+                else:
+                    self._add_log(f"Invalid rule index: {rule_index}")
+                    self.selected_rule_index = None
+        else:
+            # No selection - clear state
+            self.selected_rule_index = None
+            self._clear_preview_image("No rule\nselected")
+    
+    def _on_rule_table_double_click(self, event):
+        """Handle double-click on table rows to toggle enabled state or show preview."""
+        item = self.rules_table.identify('item', event.x, event.y)
+        column = self.rules_table.identify('column', event.x, event.y)
+        
+        if item:
+            # Get rule index from item text
+            rule_index_text = self.rules_table.item(item, 'text')
+            if rule_index_text.isdigit():
+                rule_index = int(rule_index_text)
+                
+                if column == '#1':  # Enabled column
+                    self._toggle_rule_enabled(rule_index)
+                elif column == '#5':  # Preview column
+                    self._show_template_preview_popup(rule_index)
+                else:
+                    # Edit rule on double-click anywhere else
+                    self.selected_rule_index = rule_index
+                    self._load_rule_to_details(rule_index)
+                    self._edit_rule()
+    
+    def _clear_preview_image(self, text: str = "No template\nselected", fg_color: str = "gray20"):
+        """Helper method to safely clear the preview image."""
+        try:
+            self.preview_image_label.configure(
+                image="",
+                text=text,
+                fg_color=fg_color
+            )
+            # Clear image reference
+            if hasattr(self.preview_image_label, '_current_image'):
+                delattr(self.preview_image_label, '_current_image')
+        except Exception as e:
+            print(f"Error clearing preview image: {e}")
     
     def _update_template_preview(self, rule_index: int):
         """Update the template preview image."""
@@ -830,42 +960,50 @@ Click "Debug Info" for current status information.
                     max_size = 100
                     img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
                     
-                    # Convert to PhotoImage
-                    photo = ImageTk.PhotoImage(img)
+                    # Convert to CTkImage for proper scaling
+                    ctk_image = CTkImage(light_image=img, dark_image=img, size=img.size)
                     
-                    # Update the preview label
+                    # Clear any existing image first
+                    self.preview_image_label.configure(image="", text="")
+                    
+                    # Update the preview label with new image
                     self.preview_image_label.configure(
-                        image=photo, 
-                        text="",
-                        fg_color="transparent"
+                        image=ctk_image, 
+                        text=""
                     )
-                    # Keep a reference to prevent garbage collection
-                    self.preview_image_label.image = photo
+                    # Keep a strong reference to prevent garbage collection
+                    self.preview_image_label._current_image = ctk_image
                 else:
                     # Template file not found
                     self.preview_image_label.configure(
-                        image=None,
+                        image="",
                         text=f"Template\n'{rule.template}'\nnot found",
                         fg_color="red"
                     )
-                    self.preview_image_label.image = None
+                    # Clear image reference
+                    if hasattr(self.preview_image_label, '_current_image'):
+                        delattr(self.preview_image_label, '_current_image')
             else:
                 # No rule selected
                 self.preview_image_label.configure(
-                    image=None,
+                    image="",
                     text="No template\nselected",
                     fg_color="gray20"
                 )
-                self.preview_image_label.image = None
+                # Clear image reference
+                if hasattr(self.preview_image_label, '_current_image'):
+                    delattr(self.preview_image_label, '_current_image')
                 
         except Exception as e:
             # Error loading image
             self.preview_image_label.configure(
-                image=None,
+                image="",
                 text=f"Error loading\ntemplate:\n{str(e)[:20]}...",
                 fg_color="red"
             )
-            self.preview_image_label.image = None
+            # Clear image reference
+            if hasattr(self.preview_image_label, '_current_image'):
+                delattr(self.preview_image_label, '_current_image')
     
     def _load_rule_to_details(self, index: int):
         """Load selected rule data to detail entries."""
@@ -883,7 +1021,14 @@ Click "Debug Info" for current status information.
             # Set enabled state
             self.rule_enabled_var.set(rule.enabled)
             
-            # Check if action is a sequence or simple button
+            # Set input mode (default to controller for backwards compatibility)
+            input_mode = getattr(rule, 'input_mode', 'controller')
+            self.input_mode_combobox.set(input_mode)
+            
+            # Update action interface based on input mode
+            self._on_input_mode_change()
+            
+            # Check if action is a sequence or simple action
             action = rule.action
             if ',' in action and ':' in action:
                 # It's a sequence
@@ -891,7 +1036,7 @@ Click "Debug Info" for current status information.
                 self.sequence_entry.delete(0, "end")
                 self.sequence_entry.insert(0, action)
             else:
-                # It's a simple button
+                # It's a simple action
                 self.action_type_var.set("simple")
                 self.action_combobox.set(action)
             
@@ -1079,43 +1224,103 @@ Click "Debug Info" for current status information.
             raise
     
     def _refresh_rules_list(self):
-        """Refresh the rules listbox."""
-        self.rules_listbox.delete(0, "end")
+        """Refresh the rules table with performance optimizations for large rule sets."""
+        # Clear existing items
+        for item in self.rules_table.get_children():
+            self.rules_table.delete(item)
+            
         self.current_rules = self.config_manager.get_detection_rules()
         
-        for rule in self.current_rules:
+        # Batch insert for better performance with large rule sets
+        items_to_insert = []
+        
+        for i, rule in enumerate(self.current_rules):
             # State indicator
-            state = "✓ Enabled" if rule.enabled else "✗ Disabled"
+            enabled_text = "✓ Enabled" if rule.enabled else "✗ Disabled"
             
-            # Format: State - Name - Template - Action
-            display_text = f"{state} - {rule.name} - {rule.template} - {rule.action}"
+            # Check if template exists for preview (cached check for performance)
+            template_path = os.path.join("templates", rule.template)
+            if not template_path.endswith('.png'):
+                template_path += '.png'
+            preview_text = "📷" if os.path.exists(template_path) else "❌"
             
-            self.rules_listbox.insert("end", display_text)
+            # Get input mode (default to "controller" for backwards compatibility)
+            input_mode = getattr(rule, 'input_mode', 'controller')
+            input_mode_display = input_mode.title()  # Capitalize first letter
+            
+            # Prepare item data
+            items_to_insert.append((str(i), (
+                enabled_text,
+                rule.name,
+                rule.template,
+                input_mode_display,
+                rule.action,
+                preview_text
+            )))
+        
+        # Batch insert all items
+        for item_text, values in items_to_insert:
+            self.rules_table.insert('', 'end', text=item_text, values=values)
+        
+        # Update status message
+        rule_count = len(self.current_rules)
+        if hasattr(self, 'status_label'):
+            status_text = f"Bot Status: Stopped | {rule_count} rules configured"
+            if rule_count > 100:
+                status_text += " | ⚡ Optimized for large rule sets"
+            # Note: Don't update if bot is running to avoid overriding running status
+            current_status = self.status_label.cget("text")
+            if "Running" not in current_status:
+                self.status_label.configure(text=status_text)
         
         # Clear template preview
         if hasattr(self, 'preview_image_label'):
-            self.preview_image_label.configure(
-                image=None,
-                text="No template\nselected",
-                fg_color="gray20"
-            )
-            self.preview_image_label.image = None
+            self._clear_preview_image("No template\\nselected")
+            
+        # Clear selection
+        self.selected_rule_index = None
+        
+        # Log performance info for large datasets
+        if rule_count > 50:
+            self._add_log(f"📊 Performance: Loaded {rule_count} rules successfully")
+            if rule_count > 200:
+                self._add_log("💡 Tip: Consider grouping similar rules or using more specific templates for better performance")
     
     # Rules management methods
     def _add_rule(self):
         """Add a new detection rule."""
         try:
-            # Clear detail entries
+            # Clear detail entries for new rule
             self.rule_name_entry.delete(0, "end")
             self.template_name_entry.delete(0, "end")
             self.confidence_slider.set(0.8)
+            
+            # Reset input mode to default
+            self.input_mode_combobox.set("controller")
+            self._on_input_mode_change()  # Update available actions
+            
+            # Reset action type to simple
+            self.action_type_var.set("simple")
+            self._on_action_type_change()
+            
+            # Set default action based on input mode
             self.action_combobox.set("A")
             
-            # Clear selection
-            self.rules_listbox.selection_clear(0, "end")
+            # Reset enabled state
+            self.rule_enabled_var.set(True)
+            
+            # CRITICAL: Clear selection to ensure new rule creation
             self.selected_rule_index = None
             
-            self._add_log("Ready to add new rule - fill in details and click Save Rule")
+            # Clear table selection
+            if hasattr(self, 'rules_table'):
+                self.rules_table.selection_remove(self.rules_table.selection())
+            
+            # Clear template preview
+            self._clear_preview_image("Ready for new\ntemplate")
+            
+            self._add_log("🆕 Ready to add NEW rule - fill in details and click Save Rule")
+            self._add_log(f"DEBUG: Cleared selection (selected_rule_index = {self.selected_rule_index})")
             
         except Exception as e:
             self._add_log(f"Error preparing new rule: {e}")
@@ -1171,6 +1376,7 @@ Click "Debug Info" for current status information.
             name = self.rule_name_entry.get().strip()
             template = self.template_name_entry.get().strip()
             confidence = self.confidence_slider.get()
+            input_mode = self.input_mode_combobox.get()
             
             # Get action based on type
             action_type = self.action_type_var.get()
@@ -1195,9 +1401,13 @@ Click "Debug Info" for current status information.
                 messagebox.showerror("Invalid Input", "Action is required")
                 return
             
+            if input_mode not in ["controller", "keyboard", "mouse"]:
+                messagebox.showerror("Invalid Input", "Invalid input mode selected")
+                return
+            
             # Validate sequence format if it's a sequence
             if action_type == "sequence":
-                if not self._validate_sequence(action):
+                if not self._validate_sequence(action, input_mode):
                     return
             
             # Check if template file exists
@@ -1212,22 +1422,26 @@ Click "Debug Info" for current status information.
                     return
             
             # Determine if this is an update or new rule
-            if self.selected_rule_index is not None:
+            if self.selected_rule_index is not None and 0 <= self.selected_rule_index < len(self.current_rules):
                 # Update existing rule
                 old_rule = self.current_rules[self.selected_rule_index]
-                if self.config_manager.update_detection_rule(old_rule.name, template, confidence, action, enabled):
+                self._add_log(f"Updating existing rule at index {self.selected_rule_index}: '{old_rule.name}'")
+                
+                if self.config_manager.update_detection_rule(old_rule.name, template, confidence, action, input_mode, enabled):
                     # If name changed, we need to remove old and add new
                     if old_rule.name != name:
                         self.config_manager.remove_detection_rule(old_rule.name)
-                        self.config_manager.add_detection_rule(name, template, confidence, action, enabled)
+                        self.config_manager.add_detection_rule(name, template, confidence, action, input_mode, enabled)
                     
-                    self._add_log(f"Rule '{name}' updated")
+                    self._add_log(f"Rule '{name}' updated successfully")
                 else:
                     self._add_log(f"Failed to update rule '{name}'")
             else:
                 # Add new rule
-                if self.config_manager.add_detection_rule(name, template, confidence, action, enabled):
-                    self._add_log(f"Rule '{name}' added")
+                self._add_log(f"Adding new rule: '{name}' (selected_rule_index = {self.selected_rule_index})")
+                
+                if self.config_manager.add_detection_rule(name, template, confidence, action, input_mode, enabled):
+                    self._add_log(f"Rule '{name}' added successfully")
                 else:
                     self._add_log(f"Failed to add rule '{name}' (name may already exist)")
                     messagebox.showerror("Error", f"Failed to add rule. Rule name '{name}' may already exist.")
@@ -1236,57 +1450,166 @@ Click "Debug Info" for current status information.
             # Refresh GUI
             self._refresh_rules_list()
             
-            # Clear selection
+            # Clear selection and form for next rule
             self.selected_rule_index = None
+            
+            # Clear the form fields to prepare for next rule
+            self.rule_name_entry.delete(0, "end")
+            self.template_name_entry.delete(0, "end")
+            self.confidence_slider.set(0.8)
+            self.input_mode_combobox.set("controller")
+            self._on_input_mode_change()
+            self.action_type_var.set("simple")
+            self._on_action_type_change()
+            self.action_combobox.set("A")
+            self.rule_enabled_var.set(True)
             
         except Exception as e:
             self._add_log(f"Error saving rule: {e}")
             messagebox.showerror("Error", f"Failed to save rule: {e}")
     
-    def _validate_sequence(self, sequence: str) -> bool:
-        """Validate sequence format."""
+    def _validate_sequence(self, sequence: str, input_mode: str = "controller") -> bool:
+        """Validate sequence format based on input mode."""
         try:
             if not sequence.strip():
                 messagebox.showerror("Invalid Sequence", "Sequence cannot be empty")
                 return False
             
             steps = sequence.split(',')
-            available_buttons = [button.value for button in XboxButton]
             
-            for step in steps:
-                step = step.strip()
-                if ':' not in step:
-                    messagebox.showerror("Invalid Sequence", 
-                                       f"Invalid step format: '{step}'. Use BUTTON:duration format.")
-                    return False
+            if input_mode == "controller":
+                return self._validate_controller_sequence(steps)
+            elif input_mode == "keyboard":
+                return self._validate_keyboard_sequence(steps)
+            elif input_mode == "mouse":
+                return self._validate_mouse_sequence(steps)
+            else:
+                messagebox.showerror("Invalid Input Mode", f"Unknown input mode: {input_mode}")
+                return False
                 
-                button_name, duration_str = step.split(':', 1)
-                button_name = button_name.strip()
-                duration_str = duration_str.strip()
-                
-                # Validate button name
-                if button_name not in available_buttons:
-                    messagebox.showerror("Invalid Sequence", 
-                                       f"Unknown button: '{button_name}'. Available: {', '.join(available_buttons)}")
-                    return False
-                
-                # Validate duration
-                try:
-                    duration = float(duration_str)
-                    if duration <= 0 or duration > 10:
-                        messagebox.showerror("Invalid Sequence", 
-                                           f"Duration must be between 0 and 10 seconds: '{duration_str}'")
-                        return False
-                except ValueError:
-                    messagebox.showerror("Invalid Sequence", 
-                                       f"Invalid duration: '{duration_str}'. Must be a number.")
-                    return False
-            
-            return True
-            
         except Exception as e:
             messagebox.showerror("Validation Error", f"Error validating sequence: {e}")
             return False
+    
+    def _validate_controller_sequence(self, steps: list) -> bool:
+        """Validate controller sequence format."""
+        available_buttons = [button.value for button in XboxButton]
+        
+        for step in steps:
+            step = step.strip()
+            if ':' not in step:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Invalid step format: '{step}'. Use BUTTON:duration format.")
+                return False
+            
+            button_name, duration_str = step.split(':', 1)
+            button_name = button_name.strip()
+            duration_str = duration_str.strip()
+            
+            # Validate button name
+            if button_name not in available_buttons:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Unknown button: '{button_name}'. Available: {', '.join(available_buttons)}")
+                return False
+            
+            # Validate duration
+            try:
+                duration = float(duration_str)
+                if duration <= 0 or duration > 10:
+                    messagebox.showerror("Invalid Sequence", 
+                                       f"Duration must be between 0 and 10 seconds: '{duration_str}'")
+                    return False
+            except ValueError:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Invalid duration: '{duration_str}'. Must be a number.")
+                return False
+        
+        return True
+    
+    def _validate_keyboard_sequence(self, steps: list) -> bool:
+        """Validate keyboard sequence format."""
+        from modules.virtual_controller import KeyboardKey
+        available_keys = [key.value for key in KeyboardKey]
+        
+        for step in steps:
+            step = step.strip()
+            if ':' not in step:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Invalid step format: '{step}'. Use KEY:duration or KEY1+KEY2:duration format.")
+                return False
+            
+            key_part, duration_str = step.split(':', 1)
+            key_part = key_part.strip()
+            duration_str = duration_str.strip()
+            
+            # Check if it's a key combination
+            if '+' in key_part:
+                keys = key_part.split('+')
+                for key in keys:
+                    key = key.strip()
+                    if key not in available_keys:
+                        messagebox.showerror("Invalid Sequence", 
+                                           f"Unknown key in combination: '{key}'. Available: {', '.join(available_keys[:20])}...")
+                        return False
+            else:
+                # Single key
+                if key_part not in available_keys:
+                    messagebox.showerror("Invalid Sequence", 
+                                       f"Unknown key: '{key_part}'. Available: {', '.join(available_keys[:20])}...")
+                    return False
+            
+            # Validate duration
+            try:
+                duration = float(duration_str)
+                if duration <= 0 or duration > 10:
+                    messagebox.showerror("Invalid Sequence", 
+                                       f"Duration must be between 0 and 10 seconds: '{duration_str}'")
+                    return False
+            except ValueError:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Invalid duration: '{duration_str}'. Must be a number.")
+                return False
+        
+        return True
+    
+    def _validate_mouse_sequence(self, steps: list) -> bool:
+        """Validate mouse sequence format."""
+        valid_actions = ["click", "doubleclick", "move", "scroll"]
+        
+        for step in steps:
+            step = step.strip()
+            if ':' not in step:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Invalid step format: '{step}'. Use ACTION:params:duration format.")
+                return False
+            
+            parts = step.split(':')
+            if len(parts) < 2:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Invalid mouse action format: '{step}'")
+                return False
+            
+            action = parts[0].strip()
+            
+            # Check if action is valid
+            if action not in valid_actions and not any(action.startswith(va) for va in valid_actions):
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Unknown mouse action: '{action}'. Available: {', '.join(valid_actions)}")
+                return False
+            
+            # Validate duration (last part)
+            try:
+                duration = float(parts[-1])
+                if duration <= 0 or duration > 10:
+                    messagebox.showerror("Invalid Sequence", 
+                                       f"Duration must be between 0 and 10 seconds: '{parts[-1]}'")
+                    return False
+            except ValueError:
+                messagebox.showerror("Invalid Sequence", 
+                                   f"Invalid duration: '{parts[-1]}'. Must be a number.")
+                return False
+        
+        return True
     
     def _capture_template(self):
         """Capture a template image from screen."""
@@ -1395,6 +1718,99 @@ Click "Debug Info" for current status information.
             except:
                 pass
             self._add_log(f"Error during template capture: {e}")
+    
+    def _import_templates(self):
+        """Import multiple template files at once."""
+        try:
+            from tkinter import filedialog
+            
+            # Ask user to select multiple image files
+            filetypes = [
+                ("Image files", "*.png *.jpg *.jpeg *.bmp *.gif *.tiff"),
+                ("PNG files", "*.png"),
+                ("JPEG files", "*.jpg *.jpeg"),
+                ("All files", "*.*")
+            ]
+            
+            file_paths = filedialog.askopenfilenames(
+                title="Select Template Images to Import",
+                filetypes=filetypes
+            )
+            
+            if not file_paths:
+                return
+            
+            # Ensure templates directory exists
+            templates_dir = "templates"
+            if not os.path.exists(templates_dir):
+                os.makedirs(templates_dir)
+            
+            imported_count = 0
+            skipped_count = 0
+            error_count = 0
+            
+            self._add_log(f"Starting bulk template import: {len(file_paths)} files selected")
+            
+            for file_path in file_paths:
+                try:
+                    # Get filename without path
+                    filename = os.path.basename(file_path)
+                    name_without_ext = os.path.splitext(filename)[0]
+                    
+                    # Convert to PNG if needed and copy to templates folder
+                    target_path = os.path.join(templates_dir, f"{name_without_ext}.png")
+                    
+                    # Check if target already exists
+                    if os.path.exists(target_path):
+                        response = messagebox.askyesnocancel(
+                            "Template Exists", 
+                            f"Template '{name_without_ext}.png' already exists. Overwrite?\\n\\nYes = Overwrite\\nNo = Skip\\nCancel = Stop import"
+                        )
+                        if response is None:  # Cancel
+                            break
+                        elif response == False:  # No (skip)
+                            self._add_log(f"Skipped: {filename} (already exists)")
+                            skipped_count += 1
+                            continue
+                    
+                    # Load and convert image
+                    from PIL import Image
+                    img = Image.open(file_path)
+                    
+                    # Convert to RGBA if needed (for PNG)
+                    if img.mode not in ('RGBA', 'RGB'):
+                        img = img.convert('RGBA')
+                    
+                    # Save as PNG in templates folder
+                    img.save(target_path, 'PNG')
+                    
+                    self._add_log(f"Imported: {filename} -> {name_without_ext}.png")
+                    imported_count += 1
+                    
+                except Exception as e:
+                    self._add_log(f"Error importing {filename}: {e}")
+                    error_count += 1
+            
+            # Summary
+            summary = f"\\n=== IMPORT SUMMARY ===\\n"
+            summary += f"Successfully imported: {imported_count} templates\\n"
+            if skipped_count > 0:
+                summary += f"Skipped (already exist): {skipped_count} templates\\n"
+            if error_count > 0:
+                summary += f"Errors encountered: {error_count} templates\\n"
+            summary += f"Total templates now available: {len([f for f in os.listdir(templates_dir) if f.endswith('.png')] if os.path.exists(templates_dir) else [])}\\n"
+            summary += f"\u2705 No limit on template count - import as many as you need!"
+            
+            self._add_log(summary)
+            
+            if imported_count > 0:
+                messagebox.showinfo("Import Complete", 
+                                  f"Successfully imported {imported_count} template(s).\\n\\n"
+                                  f"You can now create detection rules using these templates.")
+            
+        except Exception as e:
+            self._add_log(f"Error during bulk template import: {e}")
+            messagebox.showerror("Import Error", f"Failed to import templates: {e}")
     
     # Configuration management methods
     def _save_config(self):
@@ -1540,6 +1956,87 @@ Click "Debug Info" for current status information.
         except Exception as e:
             self._add_log(f"Error importing configuration: {e}")
             messagebox.showerror("Error", f"Failed to import configuration: {e}")
+    
+    def _show_template_stats(self):
+        """Show comprehensive template statistics and management info."""
+        try:
+            stats = self.config_manager.get_template_statistics()
+            
+            stats_text = f"=== TEMPLATE STATISTICS ===\\n\\n"
+            stats_text += f"📊 Total Templates: {stats['total_templates']}\\n"
+            stats_text += f"💾 Total Size: {stats['total_size_bytes']:,} bytes ({stats['total_size_bytes']/(1024*1024):.1f} MB)\\n"
+            
+            if stats['total_templates'] > 0:
+                stats_text += f"📏 Average Size: {stats['average_size_bytes']:,} bytes\\n"
+                
+                if stats['largest_template']:
+                    largest = stats['largest_template']
+                    stats_text += f"📈 Largest: {largest['name']} ({largest['size']:,} bytes)\\n"
+                
+                if stats['smallest_template']:
+                    smallest = stats['smallest_template']
+                    stats_text += f"📉 Smallest: {smallest['name']} ({smallest['size']:,} bytes)\\n"
+            
+            stats_text += f"\\n🚀 UNLIMITED SUPPORT: ✅\\n"
+            stats_text += f"• No limit on number of templates\\n"
+            stats_text += f"• No limit on template file sizes\\n"
+            stats_text += f"• Performance optimized for large datasets\\n"
+            
+            # Template usage analysis
+            if stats['template_usage_count']:
+                most_used = max(stats['template_usage_count'].items(), key=lambda x: x[1])
+                stats_text += f"\\n📈 Most Used Template: {most_used[0]} ({most_used[1]} rules)\\n"
+            
+            # Unused templates
+            if stats['templates_without_rules']:
+                count = len(stats['templates_without_rules'])
+                stats_text += f"\\n⚠️ Unused Templates: {count}\\n"
+                if count <= 10:
+                    for template in stats['templates_without_rules']:
+                        stats_text += f"  • {template}\\n"
+                else:
+                    for template in stats['templates_without_rules'][:5]:
+                        stats_text += f"  • {template}\\n"
+                    stats_text += f"  ... and {count-5} more\\n"
+            
+            # Missing templates
+            if stats['rules_without_templates']:
+                count = len(stats['rules_without_templates'])
+                stats_text += f"\\n❌ Missing Templates: {count}\\n"
+                for missing in stats['rules_without_templates'][:10]:
+                    stats_text += f"  • Rule '{missing['rule_name']}' needs '{missing['template_name']}'\\n"
+                if count > 10:
+                    stats_text += f"  ... and {count-10} more\\n"
+            
+            if stats['total_templates'] >= 100:
+                stats_text += f"\\n🎯 PERFORMANCE TIPS:\\n"
+                stats_text += f"• Large template collections work great!\\n"
+                stats_text += f"• Consider organizing by game/application\\n"
+                stats_text += f"• Use descriptive template names\\n"
+                stats_text += f"• Remove unused templates to save disk space\\n"
+            
+            if 'error' in stats:
+                stats_text += f"\\n❌ Error: {stats['error']}\\n"
+            
+            self._add_log(stats_text)
+            
+            # Also show in popup for better visibility
+            popup = tk.Toplevel(self.root)
+            popup.title("Template Statistics")
+            popup.geometry("600x500")
+            popup.configure(bg="#2b2b2b")
+            
+            text_widget = tk.Text(popup, bg="#2b2b2b", fg="white", font=("Consolas", 10))
+            text_widget.pack(fill="both", expand=True, padx=10, pady=10)
+            text_widget.insert("1.0", stats_text)
+            text_widget.config(state="disabled")
+            
+            close_btn = tk.Button(popup, text="Close", command=popup.destroy)
+            close_btn.pack(pady=5)
+            
+        except Exception as e:
+            self._add_log(f"Error generating template statistics: {e}")
+            messagebox.showerror("Error", f"Failed to generate template statistics: {e}")
     
     def _clear_gui_fields(self):
         """Clear all GUI input fields."""
@@ -1792,11 +2289,65 @@ Click "Debug Info" for current status information.
         except Exception as e:
             self._add_log(f"Error changing action type: {e}")
     
+    def _on_input_mode_change(self, selected_mode=None):
+        """Handle input mode change to update available actions."""
+        try:
+            input_mode = self.input_mode_combobox.get()
+            
+            # Import new enums
+            from modules.virtual_controller import KeyboardKey, MouseButton, XboxButton
+            
+            if input_mode == "controller":
+                # Update to controller buttons
+                available_actions = [button.value for button in XboxButton]
+                self.action_combobox.configure(values=available_actions)
+                self.action_combobox.set("A")
+                self.simple_action_label.configure(text="Button:")
+                
+                # Update sequence placeholder
+                self.sequence_entry.configure(
+                    placeholder_text="A:0.1,STICK_UP:2.0,B:0.2"
+                )
+                
+            elif input_mode == "keyboard":
+                # Update to keyboard keys
+                available_actions = [key.value for key in KeyboardKey]
+                # Add common combinations
+                available_actions.extend(["ctrl+c", "ctrl+v", "alt+tab", "ctrl+z"])
+                self.action_combobox.configure(values=available_actions)
+                self.action_combobox.set("space")
+                self.simple_action_label.configure(text="Key:")
+                
+                # Update sequence placeholder
+                self.sequence_entry.configure(
+                    placeholder_text="w:2.0,ctrl+c:0.1,v:0.1"
+                )
+                
+            elif input_mode == "mouse":
+                # Update to mouse actions
+                available_actions = [
+                    "click", "click:left", "click:right", "click:middle",
+                    "doubleclick", "doubleclick:left",
+                    "move:100:200", "scroll:up", "scroll:down"
+                ]
+                self.action_combobox.configure(values=available_actions)
+                self.action_combobox.set("click")
+                self.simple_action_label.configure(text="Action:")
+                
+                # Update sequence placeholder
+                self.sequence_entry.configure(
+                    placeholder_text="click:0.1,move:100:200:0.5,click:0.1"
+                )
+                
+        except Exception as e:
+            self._add_log(f"Error changing input mode: {e}")
+    
     def _show_sequence_help(self):
         """Show help for sequence format."""
         help_text = """
 === SEQUENCE FORMAT HELP ===
 
+🎮 CONTROLLER MODE:
 Format: BUTTON1:duration,BUTTON2:duration,BUTTON3:duration
 
 Available Buttons:
@@ -1809,28 +2360,49 @@ Available Buttons:
 - START, BACK (system buttons)
 - LEFT_THUMB, RIGHT_THUMB (stick clicks)
 
-Duration: Time in seconds (decimals allowed)
+Examples:
+🎮 Joystick movement: STICK_UP:2.0,STICK_LEFT:1.5,STICK_RIGHT:1.0
+🎮 Jump and move: A:0.2,STICK_UP:1.0
+🎮 Circle movement: STICK_UP:1,STICK_RIGHT:1,STICK_DOWN:1,STICK_LEFT:1
+🎮 Complex combo: X:0.1,Y:0.1,STICK_DOWN:0.5,A:0.2
+
+⌨️ KEYBOARD MODE:
+Format: KEY1:duration,KEY2:duration,COMBO1+COMBO2:duration
+
+Available Keys:
+- Letters: a-z
+- Numbers: 0-9
+- Special: space, enter, tab, esc, backspace, delete
+- Arrows: up, down, left, right
+- Function: f1-f12
+- Modifiers: ctrl, alt, shift, win
 
 Examples:
-🎮 Joystick movement sequence:
-   STICK_UP:2.0,STICK_LEFT:1.5,STICK_RIGHT:1.0
+⌨️ Movement: w:2.0,a:1.0,d:1.0
+⌨️ Copy/Paste: ctrl+a:0.1,ctrl+c:0.1,ctrl+v:0.1
+⌨️ Alt-Tab: alt+tab:0.1
+⌨️ Text entry: h:0.1,e:0.1,l:0.1,l:0.1,o:0.1
 
-🎮 Jump and move with stick:
-   A:0.2,STICK_UP:1.0
+🖱️ MOUSE MODE:
+Format: ACTION:params:duration,ACTION:params:duration
 
-🎮 Circle movement:
-   STICK_UP:1,STICK_RIGHT:1,STICK_DOWN:1,STICK_LEFT:1
+Available Actions:
+- click, click:left, click:right, click:middle
+- doubleclick, doubleclick:left
+- move:x:y (move to coordinates)
+- scroll:up, scroll:down, scroll:up:5 (amount)
 
-🎮 Complex combo:
-   X:0.1,Y:0.1,STICK_DOWN:0.5,A:0.2
+Examples:
+🖱️ Click sequence: click:0.1,move:100:200:0.5,click:0.1
+🖱️ Right-click menu: click:right:0.1,move:150:250:0.2,click:left:0.1
+🖱️ Scroll and click: scroll:down:3:0.5,click:0.1
 
 Notes:
-- Each button is held for the specified duration
-- 0.1 second pause between each step
-- Sequence executes when template is detected
+- Duration is in seconds (0.1 = 100ms)
 - Use shorter durations (0.1-0.5s) for quick actions
 - Use longer durations (1-3s) for movement
-- Stick movements provide analog control vs DPAD digital
+- Key combinations use + (ctrl+c, alt+tab)
+- Mouse coordinates are absolute screen positions
 """
         self._add_log(help_text)
     
@@ -1840,6 +2412,76 @@ Notes:
             self.bot_thread.stop_bot()
         
         self.root.destroy()
+    
+    def _toggle_rule_enabled(self, rule_index: int):
+        """Toggle the enabled state of a rule."""
+        try:
+            if 0 <= rule_index < len(self.current_rules):
+                rule = self.current_rules[rule_index]
+                
+                # Toggle the enabled state in config
+                success = self.config_manager.toggle_rule_enabled(rule.name)
+                
+                if success:
+                    # Update the rule object
+                    rule.enabled = not rule.enabled
+                    
+                    # Refresh the table to show updated state
+                    self._refresh_rules_list()
+                    
+                    state_text = "enabled" if rule.enabled else "disabled"
+                    self._add_log(f"Rule '{rule.name}' {state_text}")
+                else:
+                    self._add_log(f"Failed to toggle rule '{rule.name}'")
+        except Exception as e:
+            self._add_log(f"Error toggling rule: {e}")
+    
+    def _show_template_preview_popup(self, rule_index: int):
+        """Show template preview in a popup window."""
+        try:
+            if 0 <= rule_index < len(self.current_rules):
+                rule = self.current_rules[rule_index]
+                template_path = os.path.join("templates", rule.template)
+                
+                if not template_path.endswith('.png'):
+                    template_path += '.png'
+                
+                if os.path.exists(template_path):
+                    # Create popup window
+                    popup = tk.Toplevel(self.root)
+                    popup.title(f"Template Preview - {rule.template}")
+                    popup.geometry("400x400")
+                    popup.configure(bg="#2b2b2b")
+                    
+                    # Load and display image
+                    img = Image.open(template_path)
+                    
+                    # Scale image to fit popup while maintaining aspect ratio
+                    max_size = 350
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    
+                    # Use regular PhotoImage for tk.Label in popup (not CTkLabel)
+                    photo = ImageTk.PhotoImage(img)
+                    
+                    label = tk.Label(popup, image=photo, bg="#2b2b2b")
+                    label.pack(pady=20)
+                    
+                    # Info label
+                    info_text = f"Template: {rule.template}\\nRule: {rule.name}\\nAction: {rule.action}"
+                    info_label = tk.Label(popup, text=info_text, bg="#2b2b2b", fg="white", font=("Arial", 10))
+                    info_label.pack(pady=10)
+                    
+                    # Keep reference to prevent garbage collection
+                    label.image = photo
+                    
+                    # Center popup
+                    popup.transient(self.root)
+                    popup.grab_set()
+                else:
+                    messagebox.showerror("Template Not Found", f"Template file '{rule.template}' not found in templates folder.")
+        except Exception as e:
+            self._add_log(f"Error showing template preview: {e}")
+            messagebox.showerror("Preview Error", f"Failed to show template preview: {e}")
     
     def run(self):
         """Start the GUI application."""

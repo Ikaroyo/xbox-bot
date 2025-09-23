@@ -10,7 +10,7 @@ import time
 from typing import List, Dict, Callable, Optional
 from .window_manager import WindowManager
 from .image_detector import ImageDetector
-from .virtual_controller import VirtualController, XboxButton
+from .virtual_controller import VirtualController, XboxButton, InputMode
 
 
 class BotThread(threading.Thread):
@@ -20,7 +20,8 @@ class BotThread(threading.Thread):
                  window_manager: WindowManager,
                  image_detector: ImageDetector,
                  virtual_controller: VirtualController,
-                 log_callback: Callable[[str], None] = None):
+                 log_callback: Callable[[str], None] = None,
+                 config_manager = None):
         """
         Initialize the bot thread.
         
@@ -36,6 +37,7 @@ class BotThread(threading.Thread):
         self.image_detector = image_detector
         self.virtual_controller = virtual_controller
         self.log_callback = log_callback
+        self.config_manager = config_manager
         
         # Bot state
         self.running = False
@@ -259,6 +261,9 @@ class BotThread(threading.Thread):
                 if match:
                     self.log(f"Detected: {rule_name} (confidence: {match['confidence']:.3f})")
                     
+                    # Handle cycle tracking if enabled
+                    self._handle_cycle_tracking(rule)
+                    
                     # Execute the action
                     if self._execute_action(action, rule_name):
                         # Action executed successfully, apply cooldown
@@ -435,3 +440,67 @@ class BotThread(threading.Thread):
             'cooldown_active': self._is_cooldown_active(),
             'controller_connected': self.virtual_controller.is_connected()
         }
+    
+    def _handle_cycle_tracking(self, rule: Dict):
+        """Handle cycle tracking when a rule is triggered."""
+        try:
+            # Only process if config manager is available and rule has cycle tracking
+            if not self.config_manager or not rule.get('is_cycle_marker', False):
+                return
+            
+            cycle_name = rule.get('cycle_name', '')
+            cycle_type = rule.get('cycle_type', 'none')
+            rule_name = rule.get('name', 'Unknown')
+            
+            if not cycle_name or cycle_type == 'none':
+                return
+            
+            if cycle_type == 'start':
+                # Check for duplicate cycle start
+                if self.config_manager.is_cycle_duplicate(cycle_name):
+                    self.log(f"🔄 Ignoring duplicate cycle start for '{cycle_name}'")
+                    return
+                
+                # Start new cycle
+                if self.config_manager.start_cycle(cycle_name, rule_name):
+                    self.log(f"🎯 Started cycle: '{cycle_name}' with rule '{rule_name}'")
+                    
+            elif cycle_type == 'checkpoint':
+                # Add checkpoint to active cycle
+                if self.config_manager.add_cycle_checkpoint(cycle_name, rule_name):
+                    self.log(f"📍 Checkpoint: '{rule_name}' in cycle '{cycle_name}'")
+                    
+            elif cycle_type == 'end':
+                # End cycle and get statistics
+                stats = self.config_manager.end_cycle(cycle_name, rule_name)
+                if stats:
+                    duration = stats.get('duration', 0)
+                    checkpoint_count = stats.get('checkpoint_count', 0)
+                    self.log(f"🏁 Completed cycle: '{cycle_name}' in {duration:.1f}s ({checkpoint_count} checkpoints)")
+                    
+                    # Check against expected time if specified
+                    expected_time = rule.get('expected_cycle_time', 0)
+                    if expected_time > 0:
+                        tolerance = rule.get('cycle_tolerance', 0.3)
+                        time_diff = abs(duration - expected_time)
+                        time_ratio = time_diff / expected_time
+                        
+                        if time_ratio <= tolerance:
+                            self.log(f"✅ Cycle time within expected range ({expected_time:.1f}s ±{tolerance*100:.0f}%)")
+                        else:
+                            status = "faster" if duration < expected_time else "slower"
+                            self.log(f"⚠️ Cycle {status} than expected: {duration:.1f}s vs {expected_time:.1f}s")
+                    
+                    # Show cycle statistics
+                    cycle_stats = self.config_manager.get_cycle_statistics(cycle_name)
+                    if cycle_stats:
+                        total_cycles = cycle_stats.get('total_cycles', 0)
+                        avg_time = cycle_stats.get('average_time', 0)
+                        self.log(f"📊 Total cycles: {total_cycles}, Average: {avg_time:.1f}s")
+                
+                # Clean up old cycles periodically
+                if stats and stats.get('duration', 0) > 0:
+                    self.config_manager.cleanup_old_cycles()
+                    
+        except Exception as e:
+            self.log(f"Error in cycle tracking: {e}")

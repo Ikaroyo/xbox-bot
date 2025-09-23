@@ -3,13 +3,15 @@ Configuration Manager Module
 
 Handles saving and loading of bot configuration including rules,
 window settings, and other application preferences.
+Provides validation, import/export, and template management functionality.
 """
 
 import json
 import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
+import shutil
 
 
 @dataclass
@@ -20,7 +22,14 @@ class DetectionRule:
     template: str
     confidence: float
     action: str
+    input_mode: str = "controller"  # "controller", "keyboard", or "mouse"
     enabled: bool = True
+    # Cycle tracking fields
+    is_cycle_marker: bool = False  # Mark this template as a cycle start/end marker
+    cycle_type: str = "none"  # "start", "end", "checkpoint", "none"
+    cycle_name: str = ""  # Name of the mission/cycle (e.g., "MainMission", "DailyQuest")
+    expected_cycle_time: float = 0.0  # Expected time in seconds for this cycle
+    cycle_tolerance: float = 0.3  # Tolerance for cycle detection (30% by default)
 
 
 @dataclass
@@ -48,6 +57,22 @@ class JoystickConfig:
 
 
 @dataclass
+class CycleTrackingData:
+    """Data class for cycle tracking information."""
+    cycle_name: str
+    start_time: float
+    end_time: float = 0.0
+    duration: float = 0.0
+    checkpoints: List[Dict[str, float]] = None  # List of {"name": str, "time": float}
+    is_complete: bool = False
+    cycle_count: int = 1
+    
+    def __post_init__(self):
+        if self.checkpoints is None:
+            self.checkpoints = []
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
     version: str = "1.0.0"
@@ -56,6 +81,10 @@ class AppConfig:
     joystick_config: JoystickConfig = None
     detection_rules: List[DetectionRule] = None
     last_saved: str = ""
+    # Cycle tracking
+    active_cycles: List[CycleTrackingData] = None
+    completed_cycles: List[CycleTrackingData] = None
+    cycle_statistics: Dict[str, Dict] = None  # Stats per cycle type
     
     def __post_init__(self):
         if self.window_config is None:
@@ -66,6 +95,12 @@ class AppConfig:
             self.joystick_config = JoystickConfig()
         if self.detection_rules is None:
             self.detection_rules = []
+        if self.active_cycles is None:
+            self.active_cycles = []
+        if self.completed_cycles is None:
+            self.completed_cycles = []
+        if self.cycle_statistics is None:
+            self.cycle_statistics = {}
 
 
 class ConfigManager:
@@ -353,12 +388,14 @@ class ConfigManager:
         """Get current detection rules."""
         return self.current_config.detection_rules
     
-    def add_detection_rule(self, name: str, template: str, confidence: float, action: str, enabled: bool = True) -> bool:
-        """Add a new detection rule."""
+    def add_detection_rule(self, name: str, template: str, confidence: float, action: str, input_mode: str = "controller", enabled: bool = True, 
+                          is_cycle_marker: bool = False, cycle_type: str = "none", cycle_name: str = "", 
+                          expected_cycle_time: float = 0.0, cycle_tolerance: float = 0.3) -> bool:
+        """Add a new detection rule with optional cycle tracking."""
         # Check for duplicate names
         for rule in self.current_config.detection_rules:
             if rule.name == name:
-                print(f"Rule with name '{name}' already exists")
+                print(f"DEBUG: Rule with name '{name}' already exists - cannot add")
                 return False
         
         rule = DetectionRule(
@@ -366,10 +403,21 @@ class ConfigManager:
             template=template,
             confidence=confidence,
             action=action,
-            enabled=enabled
+            input_mode=input_mode,
+            enabled=enabled,
+            is_cycle_marker=is_cycle_marker,
+            cycle_type=cycle_type,
+            cycle_name=cycle_name,
+            expected_cycle_time=expected_cycle_time,
+            cycle_tolerance=cycle_tolerance
         )
         
+        rules_count_before = len(self.current_config.detection_rules)
         self.current_config.detection_rules.append(rule)
+        rules_count_after = len(self.current_config.detection_rules)
+        
+        cycle_info = f" (Cycle: {cycle_name}/{cycle_type})" if is_cycle_marker else ""
+        print(f"DEBUG: Added rule '{name}'{cycle_info} - count before: {rules_count_before}, after: {rules_count_after}")
         return True
     
     def remove_detection_rule(self, name: str) -> bool:
@@ -380,16 +428,22 @@ class ConfigManager:
                 return True
         return False
     
-    def update_detection_rule(self, name: str, template: str, confidence: float, action: str, enabled: bool = None) -> bool:
+    def update_detection_rule(self, name: str, template: str, confidence: float, action: str, input_mode: str = "controller", enabled: bool = None) -> bool:
         """Update an existing detection rule."""
-        for rule in self.current_config.detection_rules:
+        print(f"DEBUG: Attempting to update rule '{name}' - template: {template}, input_mode: {input_mode}")
+        
+        for i, rule in enumerate(self.current_config.detection_rules):
             if rule.name == name:
+                print(f"DEBUG: Found rule '{name}' at index {i} - updating")
                 rule.template = template
                 rule.confidence = confidence
                 rule.action = action
+                rule.input_mode = input_mode
                 if enabled is not None:
                     rule.enabled = enabled
                 return True
+        
+        print(f"DEBUG: Rule '{name}' not found for update")
         return False
     
     def toggle_rule_enabled(self, name: str) -> bool:
@@ -412,3 +466,574 @@ class ConfigManager:
                     'action': rule.action
                 })
         return rules
+    
+    def validate_rule(self, name: str, template: str, confidence: float, action: str) -> Tuple[bool, str]:
+        """
+        Validate a detection rule before adding/updating.
+        
+        Returns:
+            Tuple of (is_valid: bool, error_message: str)
+        """
+        # Validate name
+        if not name or not name.strip():
+            return False, "Rule name cannot be empty"
+        
+        # Check for invalid characters in name
+        invalid_chars = ['<', '>', ':', '"', '|', '?', '*', '/', '\\']
+        if any(char in name for char in invalid_chars):
+            return False, f"Rule name contains invalid characters: {', '.join(invalid_chars)}"
+        
+        # Validate template
+        if not template or not template.strip():
+            return False, "Template filename cannot be empty"
+        
+        # Ensure template has .png extension
+        if not template.lower().endswith('.png'):
+            template += '.png'
+        
+        # Check if template file exists
+        template_path = os.path.join("templates", template)
+        if not os.path.exists(template_path):
+            return False, f"Template file '{template}' not found in templates folder"
+        
+        # Validate confidence
+        if not (0.0 <= confidence <= 1.0):
+            return False, "Confidence must be between 0.0 and 1.0"
+        
+        # Validate action
+        if not action or not action.strip():
+            return False, "Action cannot be empty"
+        
+        # Validate sequence format if it contains commas and colons
+        if ',' in action and ':' in action:
+            return self._validate_sequence_format(action)
+        
+        return True, ""
+    
+    def _validate_sequence_format(self, sequence: str) -> Tuple[bool, str]:
+        """Validate sequence format: BUTTON:duration,BUTTON:duration"""
+        try:
+            steps = sequence.split(',')
+            for step in steps:
+                step = step.strip()
+                if ':' not in step:
+                    return False, f"Invalid sequence step format: '{step}'. Expected format: BUTTON:duration"
+                
+                button, duration_str = step.split(':', 1)
+                button = button.strip()
+                
+                if not button:
+                    return False, f"Empty button name in sequence step: '{step}'"
+                
+                try:
+                    duration = float(duration_str.strip())
+                    if duration < 0:
+                        return False, f"Duration must be positive in step: '{step}'"
+                except ValueError:
+                    return False, f"Invalid duration in sequence step: '{step}'"
+            
+            return True, ""
+        except Exception as e:
+            return False, f"Error validating sequence: {e}"
+    
+    def get_rule_by_name(self, name: str) -> Optional[DetectionRule]:
+        """Get a detection rule by name."""
+        for rule in self.current_config.detection_rules:
+            if rule.name == name:
+                return rule
+        return None
+    
+    def export_rules(self, filepath: str) -> bool:
+        """Export detection rules to a JSON file."""
+        try:
+            rules_data = []
+            for rule in self.current_config.detection_rules:
+                rules_data.append(asdict(rule))
+            
+            export_data = {
+                "export_date": datetime.now().isoformat(),
+                "rules_count": len(rules_data),
+                "rules": rules_data
+            }
+            
+            with open(filepath, 'w') as f:
+                json.dump(export_data, f, indent=2)
+            
+            return True
+        except Exception as e:
+            print(f"Error exporting rules: {e}")
+            return False
+    
+    def import_rules(self, filepath: str, merge: bool = True) -> Tuple[bool, str, int]:
+        """
+        Import detection rules from a JSON file.
+        
+        Args:
+            filepath: Path to the JSON file to import
+            merge: If True, merge with existing rules. If False, replace all rules.
+            
+        Returns:
+            Tuple of (success: bool, message: str, imported_count: int)
+        """
+        try:
+            with open(filepath, 'r') as f:
+                import_data = json.load(f)
+            
+            if 'rules' not in import_data:
+                return False, "Invalid import file format: missing 'rules' key", 0
+            
+            imported_rules = []
+            for rule_data in import_data['rules']:
+                try:
+                    rule = DetectionRule(**rule_data)
+                    imported_rules.append(rule)
+                except Exception as e:
+                    return False, f"Invalid rule data: {e}", 0
+            
+            # Validate all rules before importing
+            for rule in imported_rules:
+                is_valid, error = self.validate_rule(rule.name, rule.template, rule.confidence, rule.action)
+                if not is_valid:
+                    return False, f"Invalid rule '{rule.name}': {error}", 0
+            
+            # If not merging, clear existing rules
+            if not merge:
+                self.current_config.detection_rules.clear()
+            
+            # Add imported rules (skip duplicates if merging)
+            added_count = 0
+            for rule in imported_rules:
+                if merge and any(existing.name == rule.name for existing in self.current_config.detection_rules):
+                    continue  # Skip duplicate names when merging
+                
+                self.current_config.detection_rules.append(rule)
+                added_count += 1
+            
+            return True, f"Successfully imported {added_count} rules", added_count
+            
+        except Exception as e:
+            return False, f"Error importing rules: {e}", 0
+    
+    def get_template_info(self, template_name: str) -> Dict[str, Any]:
+        """Get information about a template file."""
+        template_path = os.path.join("templates", template_name)
+        if not template_path.endswith('.png'):
+            template_path += '.png'
+        
+        info = {
+            "name": template_name,
+            "path": template_path,
+            "exists": os.path.exists(template_path),
+            "size": None,
+            "modified": None
+        }
+        
+        if info["exists"]:
+            try:
+                stat = os.stat(template_path)
+                info["size"] = stat.st_size
+                info["modified"] = datetime.fromtimestamp(stat.st_mtime).isoformat()
+            except Exception:
+                pass
+        
+        return info
+    
+    def get_template_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive template statistics for performance monitoring."""
+        templates_dir = "templates"
+        stats = {
+            "total_templates": 0,
+            "total_size_bytes": 0,
+            "average_size_bytes": 0,
+            "largest_template": None,
+            "smallest_template": None,
+            "templates_without_rules": [],
+            "rules_without_templates": [],
+            "template_usage_count": {},
+            "supported_unlimited": True
+        }
+        
+        if not os.path.exists(templates_dir):
+            return stats
+        
+        try:
+            template_files = [f for f in os.listdir(templates_dir) if f.endswith('.png')]
+            stats["total_templates"] = len(template_files)
+            
+            if len(template_files) == 0:
+                return stats
+            
+            # Analyze template files
+            sizes = []
+            largest_size = 0
+            smallest_size = float('inf')
+            
+            for template_file in template_files:
+                template_path = os.path.join(templates_dir, template_file)
+                file_size = os.path.getsize(template_path)
+                sizes.append(file_size)
+                stats["total_size_bytes"] += file_size
+                
+                if file_size > largest_size:
+                    largest_size = file_size
+                    stats["largest_template"] = {"name": template_file, "size": file_size}
+                
+                if file_size < smallest_size:
+                    smallest_size = file_size
+                    stats["smallest_template"] = {"name": template_file, "size": file_size}
+            
+            stats["average_size_bytes"] = stats["total_size_bytes"] // len(template_files)
+            
+            # Analyze template usage
+            rules = self.get_detection_rules()
+            used_templates = set()
+            
+            for rule in rules:
+                template_name = rule.template
+                if not template_name.endswith('.png'):
+                    template_name += '.png'
+                
+                used_templates.add(template_name)
+                stats["template_usage_count"][template_name] = stats["template_usage_count"].get(template_name, 0) + 1
+            
+            # Find unused templates
+            all_templates = set(template_files)
+            stats["templates_without_rules"] = list(all_templates - used_templates)
+            
+            # Find rules with missing templates
+            for rule in rules:
+                template_name = rule.template
+                if not template_name.endswith('.png'):
+                    template_name += '.png'
+                    
+                template_path = os.path.join(templates_dir, template_name)
+                if not os.path.exists(template_path):
+                    stats["rules_without_templates"].append({
+                        "rule_name": rule.name,
+                        "template_name": template_name
+                    })
+            
+        except Exception as e:
+            stats["error"] = str(e)
+        
+        return stats
+    
+    # === CYCLE TRACKING METHODS ===
+    
+    def start_cycle(self, cycle_name: str, rule_name: str) -> bool:
+        """Start a new cycle timing."""
+        try:
+            import time
+            
+            # Check if cycle is already active
+            for active_cycle in self.current_config.active_cycles:
+                if active_cycle.cycle_name == cycle_name and not active_cycle.is_complete:
+                    # Cycle already running, ignore duplicate start
+                    print(f"DEBUG: Cycle '{cycle_name}' already active, ignoring duplicate start")
+                    return False
+            
+            # Create new cycle tracking
+            cycle_data = CycleTrackingData(
+                cycle_name=cycle_name,
+                start_time=time.time(),
+                checkpoints=[{"name": rule_name, "time": time.time()}]
+            )
+            
+            self.current_config.active_cycles.append(cycle_data)
+            print(f"DEBUG: Started cycle '{cycle_name}' with rule '{rule_name}'")
+            return True
+            
+        except Exception as e:
+            print(f"Error starting cycle: {e}")
+            return False
+    
+    def add_cycle_checkpoint(self, cycle_name: str, checkpoint_name: str) -> bool:
+        """Add a checkpoint to an active cycle."""
+        try:
+            import time
+            
+            for active_cycle in self.current_config.active_cycles:
+                if active_cycle.cycle_name == cycle_name and not active_cycle.is_complete:
+                    checkpoint = {"name": checkpoint_name, "time": time.time()}
+                    active_cycle.checkpoints.append(checkpoint)
+                    print(f"DEBUG: Added checkpoint '{checkpoint_name}' to cycle '{cycle_name}'")
+                    return True
+            
+            print(f"DEBUG: No active cycle '{cycle_name}' found for checkpoint")
+            return False
+            
+        except Exception as e:
+            print(f"Error adding checkpoint: {e}")
+            return False
+    
+    def end_cycle(self, cycle_name: str, rule_name: str) -> Dict[str, Any]:
+        """End a cycle and calculate statistics."""
+        try:
+            import time
+            current_time = time.time()
+            
+            for i, active_cycle in enumerate(self.current_config.active_cycles):
+                if active_cycle.cycle_name == cycle_name and not active_cycle.is_complete:
+                    # Complete the cycle
+                    active_cycle.end_time = current_time
+                    active_cycle.duration = active_cycle.end_time - active_cycle.start_time
+                    active_cycle.is_complete = True
+                    active_cycle.checkpoints.append({"name": rule_name, "time": current_time})
+                    
+                    # Calculate cycle statistics
+                    stats = self._calculate_cycle_stats(active_cycle)
+                    
+                    # Move to completed cycles
+                    self.current_config.completed_cycles.append(active_cycle)
+                    del self.current_config.active_cycles[i]
+                    
+                    # Update global statistics
+                    self._update_cycle_statistics(cycle_name, stats)
+                    
+                    print(f"DEBUG: Completed cycle '{cycle_name}' in {active_cycle.duration:.2f}s")
+                    return stats
+            
+            print(f"DEBUG: No active cycle '{cycle_name}' found to end")
+            return {}
+            
+        except Exception as e:
+            print(f"Error ending cycle: {e}")
+            return {}
+    
+    def _calculate_cycle_stats(self, cycle_data: CycleTrackingData) -> Dict[str, Any]:
+        """Calculate statistics for a completed cycle."""
+        stats = {
+            "cycle_name": cycle_data.cycle_name,
+            "duration": cycle_data.duration,
+            "start_time": cycle_data.start_time,
+            "end_time": cycle_data.end_time,
+            "checkpoint_count": len(cycle_data.checkpoints),
+            "checkpoints": cycle_data.checkpoints.copy()
+        }
+        
+        # Calculate checkpoint intervals
+        if len(cycle_data.checkpoints) > 1:
+            intervals = []
+            for i in range(1, len(cycle_data.checkpoints)):
+                interval = cycle_data.checkpoints[i]["time"] - cycle_data.checkpoints[i-1]["time"]
+                intervals.append({
+                    "from": cycle_data.checkpoints[i-1]["name"],
+                    "to": cycle_data.checkpoints[i]["name"],
+                    "duration": interval
+                })
+            stats["intervals"] = intervals
+        
+        return stats
+    
+    def _update_cycle_statistics(self, cycle_name: str, cycle_stats: Dict[str, Any]):
+        """Update global cycle statistics."""
+        if cycle_name not in self.current_config.cycle_statistics:
+            self.current_config.cycle_statistics[cycle_name] = {
+                "total_cycles": 0,
+                "total_time": 0.0,
+                "average_time": 0.0,
+                "min_time": float('inf'),
+                "max_time": 0.0,
+                "last_completed": 0.0
+            }
+        
+        stats = self.current_config.cycle_statistics[cycle_name]
+        duration = cycle_stats["duration"]
+        
+        stats["total_cycles"] += 1
+        stats["total_time"] += duration
+        stats["average_time"] = stats["total_time"] / stats["total_cycles"]
+        stats["min_time"] = min(stats["min_time"], duration)
+        stats["max_time"] = max(stats["max_time"], duration)
+        stats["last_completed"] = cycle_stats["end_time"]
+    
+    def get_cycle_statistics(self, cycle_name: str = None) -> Dict[str, Any]:
+        """Get cycle statistics."""
+        if cycle_name:
+            return self.current_config.cycle_statistics.get(cycle_name, {})
+        else:
+            return self.current_config.cycle_statistics.copy()
+    
+    def is_cycle_duplicate(self, cycle_name: str, tolerance_seconds: float = 30.0) -> bool:
+        """Check if a cycle start might be a duplicate (too soon after last completion)."""
+        import time
+        current_time = time.time()
+        
+        # Check if there's already an active cycle
+        for active_cycle in self.current_config.active_cycles:
+            if active_cycle.cycle_name == cycle_name and not active_cycle.is_complete:
+                return True
+        
+        # Check if last completion was too recent
+        if cycle_name in self.current_config.cycle_statistics:
+            last_completed = self.current_config.cycle_statistics[cycle_name].get("last_completed", 0)
+            if current_time - last_completed < tolerance_seconds:
+                return True
+        
+        return False
+    
+    def cleanup_old_cycles(self, max_completed_cycles: int = 100):
+        """Clean up old completed cycles to prevent memory bloat."""
+        if len(self.current_config.completed_cycles) > max_completed_cycles:
+            # Keep only the most recent cycles
+            self.current_config.completed_cycles = sorted(
+                self.current_config.completed_cycles,
+                key=lambda x: x.end_time,
+                reverse=True
+            )[:max_completed_cycles]
+            print(f"DEBUG: Cleaned up old cycles, keeping {max_completed_cycles} most recent")
+
+
+class RulesManager:
+    """Manages detection rules with UI integration support."""
+    
+    def __init__(self, config_manager: 'ConfigManager'):
+        self.config_manager = config_manager
+    
+    def validate_rule_input(self, name: str, template: str, confidence: float, action: str, input_mode: str = "controller") -> tuple[bool, str]:
+        """
+        Validate rule input from UI forms.
+        
+        Returns:
+            Tuple of (is_valid: bool, error_message: str)
+        """
+        # Validate input_mode
+        valid_modes = ["controller", "keyboard", "mouse"]
+        if input_mode not in valid_modes:
+            return False, f"Invalid input mode. Must be one of: {', '.join(valid_modes)}"
+        
+        return self.config_manager.validate_rule(name, template, confidence, action)
+    
+    def create_rule_from_ui(self, name: str, template: str, confidence: float, action: str, input_mode: str = "controller", enabled: bool = True) -> tuple[bool, str]:
+        """
+        Create a new rule from UI input with validation.
+        
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        # Validate input
+        is_valid, error_msg = self.validate_rule_input(name, template, confidence, action, input_mode)
+        if not is_valid:
+            return False, error_msg
+        
+        # Check for duplicate names
+        existing_rule = self.config_manager.get_rule_by_name(name)
+        if existing_rule:
+            return False, f"Rule with name '{name}' already exists"
+        
+        # Add the rule
+        success = self.config_manager.add_detection_rule(name, template, confidence, action, input_mode, enabled)
+        if success:
+            return True, f"Rule '{name}' created successfully"
+        else:
+            return False, f"Failed to create rule '{name}'"
+    
+    def update_rule_from_ui(self, old_name: str, new_name: str, template: str, confidence: float, action: str, input_mode: str = "controller", enabled: bool = True) -> tuple[bool, str]:
+        """
+        Update an existing rule from UI input with validation.
+        
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        # Validate input
+        is_valid, error_msg = self.validate_rule_input(new_name, template, confidence, action, input_mode)
+        if not is_valid:
+            return False, error_msg
+        
+        # Handle name change
+        if old_name != new_name:
+            # Check if new name already exists
+            existing_rule = self.config_manager.get_rule_by_name(new_name)
+            if existing_rule:
+                return False, f"Rule with name '{new_name}' already exists"
+            
+            # Remove old rule and add new one
+            if not self.config_manager.remove_detection_rule(old_name):
+                return False, f"Failed to remove old rule '{old_name}'"
+            
+            success = self.config_manager.add_detection_rule(new_name, template, confidence, action, input_mode, enabled)
+            if success:
+                return True, f"Rule '{new_name}' updated successfully"
+            else:
+                return False, f"Failed to update rule '{new_name}'"
+        else:
+            # Update existing rule
+            success = self.config_manager.update_detection_rule(old_name, template, confidence, action, input_mode, enabled)
+            if success:
+                return True, f"Rule '{new_name}' updated successfully"
+            else:
+                return False, f"Failed to update rule '{new_name}'"
+    
+    def get_rules_for_ui(self) -> list[dict]:
+        """
+        Get rules formatted for UI display.
+        
+        Returns:
+            List of rule dictionaries with UI-friendly format
+        """
+        rules = self.config_manager.get_detection_rules()
+        ui_rules = []
+        
+        for rule in rules:
+            # Check if template exists
+            template_path = os.path.join("templates", rule.template)
+            if not template_path.endswith('.png'):
+                template_path += '.png'
+            
+            ui_rule = {
+                'name': rule.name,
+                'template': rule.template,
+                'confidence': rule.confidence,
+                'action': rule.action,
+                'input_mode': getattr(rule, 'input_mode', 'controller'),  # Default for backwards compatibility
+                'enabled': rule.enabled,
+                'template_exists': os.path.exists(template_path),
+                'template_path': template_path
+            }
+            ui_rules.append(ui_rule)
+        
+        return ui_rules
+    
+    def toggle_rule_enabled_by_index(self, rule_index: int) -> tuple[bool, str]:
+        """
+        Toggle rule enabled state by index.
+        
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        rules = self.config_manager.get_detection_rules()
+        if 0 <= rule_index < len(rules):
+            rule = rules[rule_index]
+            success = self.config_manager.toggle_rule_enabled(rule.name)
+            if success:
+                new_state = "enabled" if not rule.enabled else "disabled"  # State will be toggled
+                return True, f"Rule '{rule.name}' {new_state}"
+            else:
+                return False, f"Failed to toggle rule '{rule.name}'"
+        else:
+            return False, "Invalid rule index"
+    
+    def delete_rule_by_index(self, rule_index: int) -> tuple[bool, str]:
+        """
+        Delete rule by index.
+        
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        rules = self.config_manager.get_detection_rules()
+        if 0 <= rule_index < len(rules):
+            rule = rules[rule_index]
+            success = self.config_manager.remove_detection_rule(rule.name)
+            if success:
+                return True, f"Rule '{rule.name}' deleted successfully"
+            else:
+                return False, f"Failed to delete rule '{rule.name}'"
+        else:
+            return False, "Invalid rule index"
+    
+    def get_rule_by_index(self, rule_index: int) -> Optional[DetectionRule]:
+        """Get rule by index."""
+        rules = self.config_manager.get_detection_rules()
+        if 0 <= rule_index < len(rules):
+            return rules[rule_index]
+        return None
