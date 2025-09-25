@@ -14,6 +14,7 @@ from tkinter import messagebox, filedialog, simpledialog
 import threading
 import time
 import os
+import json
 from typing import List, Dict, Optional
 import queue
 from PIL import Image, ImageTk
@@ -27,6 +28,11 @@ from modules.config_manager import ConfigManager, RulesManager
 
 class StumbleBotApp:
     """Main application class with GUI and bot management."""
+    
+    # Window settings file
+    WINDOW_SETTINGS_FILE = "window_settings.json"
+    DEFAULT_GEOMETRY = "800x600+100+100"
+    DEFAULT_TEMPLATE_DIALOG_GEOMETRY = "450x350+150+150"
     
     def __init__(self):
         """Initialize the application."""
@@ -45,6 +51,11 @@ class StumbleBotApp:
         self.log_queue = queue.Queue()
         self.current_rules = []
         self.selected_rule_index = None
+        
+        # Geometry auto-save variables
+        self.geometry_save_timer = None
+        self.last_geometry = None
+        self.geometry_save_delay = 1000  # 1 second delay before saving
         
         # Load default configuration
         self.config_manager.load_config()
@@ -65,10 +76,13 @@ class StumbleBotApp:
         # Main window
         self.root = ctk.CTk()
         self.root.title("Stumble Bot - Game Automation Tool")
-        self.root.geometry("800x600")
+        
+        # Load and apply window geometry
+        self._load_window_geometry()
+        
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         
-        # Create main tab view
+        # Create main tab view first, then setup auto-save after everything is ready
         self.tab_view = ctk.CTkTabview(self.root, width=780, height=580)
         self.tab_view.pack(fill="both", expand=True, padx=10, pady=10)
         
@@ -81,6 +95,459 @@ class StumbleBotApp:
         self._setup_run_tab()
         self._setup_configuration_tab()
         self._setup_joystick_tab()
+        
+        # Re-apply saved geometry AFTER all widgets are created
+        # This ensures CustomTkinter doesn't override our saved size
+        self.root.after(100, self._reapply_saved_geometry)
+        
+        # Setup auto-save for geometry changes AFTER everything is ready
+        # Delay this to allow window to fully initialize
+        self.root.after(1000, self._setup_geometry_auto_save)
+    
+    def _load_window_geometry(self):
+        """Load and apply saved window geometry."""
+        try:
+            if os.path.exists(self.WINDOW_SETTINGS_FILE):
+                with open(self.WINDOW_SETTINGS_FILE, 'r') as f:
+                    settings = json.load(f)
+                    geometry = settings.get('geometry', self.DEFAULT_GEOMETRY)
+            else:
+                geometry = self.DEFAULT_GEOMETRY
+            
+            # Apply the geometry
+            self.root.geometry(geometry)
+            
+            # Wait a moment for the geometry to take effect
+            self.root.update_idletasks()
+            
+            # Only ensure on screen if geometry was invalid
+            self._ensure_window_on_screen_if_needed()
+            
+        except Exception as e:
+            print(f"Warning: Could not load window geometry: {e}")
+            self.root.geometry(self.DEFAULT_GEOMETRY)
+    
+    def _reapply_saved_geometry(self):
+        """Re-apply saved geometry after all widgets are created."""
+        try:
+            if os.path.exists(self.WINDOW_SETTINGS_FILE):
+                with open(self.WINDOW_SETTINGS_FILE, 'r') as f:
+                    settings = json.load(f)
+                    saved_geometry = settings.get('geometry', self.DEFAULT_GEOMETRY)
+                    
+                self.root.geometry(saved_geometry)
+                
+                # Store this as the baseline for auto-save comparison
+                self.last_geometry = saved_geometry
+                
+        except Exception as e:
+            print(f"Warning: Could not re-apply saved geometry: {e}")
+    
+    def _save_window_geometry(self):
+        """Save current window geometry."""
+        try:
+            # Get current geometry
+            geometry = self.root.geometry()
+            
+            settings = {
+                'geometry': geometry,
+                'state': self.root.state()
+            }
+            
+            with open(self.WINDOW_SETTINGS_FILE, 'w') as f:
+                json.dump(settings, f, indent=2)
+                
+        except Exception as e:
+            print(f"Warning: Could not save window geometry: {e}")
+    
+    def _ensure_window_on_screen_if_needed(self):
+        """Only adjust window position if it's actually off-screen."""
+        try:
+            # Get screen dimensions
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            
+            # Get window dimensions and position
+            self.root.update_idletasks()
+            window_width = self.root.winfo_width()
+            window_height = self.root.winfo_height()
+            x = self.root.winfo_x()
+            y = self.root.winfo_y()
+            
+            # Check if adjustment is actually needed
+            needs_adjustment = False
+            new_x, new_y = x, y
+            
+            # Only adjust if completely off-screen or mostly off-screen
+            if x + window_width < 50:  # Window is too far left
+                new_x = 0
+                needs_adjustment = True
+            elif x > screen_width - 50:  # Window is too far right
+                new_x = screen_width - window_width
+                needs_adjustment = True
+            
+            if y + window_height < 50:  # Window is too far up
+                new_y = 0
+                needs_adjustment = True
+            elif y > screen_height - 50:  # Window is too far down
+                new_y = screen_height - window_height
+                needs_adjustment = True
+            
+            if needs_adjustment:
+                print(f"DEBUG: Adjusting window position from {x},{y} to {new_x},{new_y}")
+                self.root.geometry(f"{window_width}x{window_height}+{new_x}+{new_y}")
+                
+        except Exception as e:
+            print(f"Warning: Could not check window position: {e}")
+    
+    def _ensure_window_on_screen(self):
+        """Ensure window is visible on screen."""
+        try:
+            # Get screen dimensions
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            
+            # Get window dimensions and position
+            self.root.update_idletasks()
+            window_width = self.root.winfo_width()
+            window_height = self.root.winfo_height()
+            x = self.root.winfo_x()
+            y = self.root.winfo_y()
+            
+            # Adjust if window is off-screen
+            if x < 0:
+                x = 0
+            elif x + window_width > screen_width:
+                x = screen_width - window_width
+            
+            if y < 0:
+                y = 0
+            elif y + window_height > screen_height:
+                y = screen_height - window_height
+            
+            # Apply corrected position
+            self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+            
+        except Exception as e:
+            print(f"Warning: Could not ensure window on screen: {e}")
+    
+    def center_dialog_on_main(self, dialog_window):
+        """Center a dialog window on the main application window."""
+        try:
+            # Update main window to get accurate position/size
+            self.root.update_idletasks()
+            
+            # Get main window position and size
+            main_x = self.root.winfo_x()
+            main_y = self.root.winfo_y()
+            main_width = self.root.winfo_width()
+            main_height = self.root.winfo_height()
+            
+            # Update dialog to get its size
+            dialog_window.update_idletasks()
+            dialog_width = dialog_window.winfo_reqwidth()
+            dialog_height = dialog_window.winfo_reqheight()
+            
+            # Calculate centered position
+            center_x = main_x + (main_width - dialog_width) // 2
+            center_y = main_y + (main_height - dialog_height) // 2
+            
+            # Ensure dialog is on screen
+            screen_width = dialog_window.winfo_screenwidth()
+            screen_height = dialog_window.winfo_screenheight()
+            
+            if center_x < 0:
+                center_x = 0
+            elif center_x + dialog_width > screen_width:
+                center_x = screen_width - dialog_width
+            
+            if center_y < 0:
+                center_y = 0
+            elif center_y + dialog_height > screen_height:
+                center_y = screen_height - dialog_height
+            
+            # Set dialog position
+            dialog_window.geometry(f"{dialog_width}x{dialog_height}+{center_x}+{center_y}")
+            
+        except Exception as e:
+            print(f"Warning: Could not center dialog: {e}")
+    
+    def show_centered_messagebox(self, title: str, message: str, box_type: str = "info"):
+        """Show a messagebox centered on the main window."""
+        try:
+            # Create a temporary window to center the messagebox
+            temp_window = tk.Toplevel(self.root)
+            temp_window.withdraw()  # Hide it
+            
+            # Center the temporary window
+            self.center_dialog_on_main(temp_window)
+            
+            # Show the messagebox relative to the temporary window
+            if box_type == "error":
+                result = messagebox.showerror(title, message, parent=temp_window)
+            elif box_type == "warning":
+                result = messagebox.showwarning(title, message, parent=temp_window)
+            elif box_type == "question":
+                result = messagebox.askyesno(title, message, parent=temp_window)
+            else:  # info
+                result = messagebox.showinfo(title, message, parent=temp_window)
+            
+            # Clean up
+            temp_window.destroy()
+            return result
+            
+        except Exception as e:
+            print(f"Warning: Could not show centered messagebox: {e}")
+            # Fallback to regular messagebox
+            if box_type == "error":
+                return messagebox.showerror(title, message)
+            elif box_type == "warning":
+                return messagebox.showwarning(title, message)
+            elif box_type == "question":
+                return messagebox.askyesno(title, message)
+            else:
+                return messagebox.showinfo(title, message)
+    
+    def show_centered_filedialog(self, dialog_type: str, **kwargs):
+        """Show a file dialog centered on the main window."""
+        try:
+            # Create a temporary window to parent the file dialog
+            temp_window = tk.Toplevel(self.root)
+            temp_window.withdraw()  # Hide it
+            
+            # Center the temporary window
+            self.center_dialog_on_main(temp_window)
+            
+            # Add parent to kwargs
+            kwargs['parent'] = temp_window
+            
+            # Show the appropriate dialog
+            if dialog_type == "open":
+                result = filedialog.askopenfilename(**kwargs)
+            elif dialog_type == "open_multiple":
+                result = filedialog.askopenfilenames(**kwargs)
+            elif dialog_type == "save":
+                result = filedialog.asksaveasfilename(**kwargs)
+            else:
+                result = None
+            
+            # Clean up
+            temp_window.destroy()
+            return result
+            
+        except Exception as e:
+            print(f"Warning: Could not show centered file dialog: {e}")
+            # Fallback to regular file dialog without parent
+            kwargs.pop('parent', None)  # Remove parent if it was added
+            
+            if dialog_type == "open":
+                return filedialog.askopenfilename(**kwargs)
+            elif dialog_type == "open_multiple":
+                return filedialog.askopenfilenames(**kwargs)
+            elif dialog_type == "save":
+                return filedialog.asksaveasfilename(**kwargs)
+            else:
+                return None
+    
+    def _setup_geometry_auto_save(self):
+        """Setup automatic geometry saving when window changes."""
+        # Use the geometry that was set in _reapply_saved_geometry, or get current
+        if not self.last_geometry:
+            self.root.update_idletasks()
+            self.last_geometry = self.root.geometry()
+        
+        # Bind to window configuration events (resize and move)
+        self.root.bind('<Configure>', self._on_window_configure)
+        
+        # Also bind to window map events (in case of state changes)
+        self.root.bind('<Map>', self._on_window_map)
+    
+    def _on_window_map(self, event):
+        """Handle window map events (window becomes visible)."""
+        if event.widget == self.root:
+            # Small delay to ensure window is properly mapped
+            self.root.after(100, self._check_geometry_change)
+    
+    def _check_geometry_change(self):
+        """Check if geometry changed and trigger save if needed."""
+        current_geometry = self.root.geometry()
+        if current_geometry != self.last_geometry:
+            self.last_geometry = current_geometry
+            self._schedule_geometry_save()
+    
+    def _on_window_configure(self, event):
+        """Handle window configuration changes (resize, move)."""
+        # Only handle events for the main window
+        if event.widget == self.root:
+            current_geometry = self.root.geometry()
+            
+            # Check if geometry actually changed
+            if current_geometry != self.last_geometry:
+                self.last_geometry = current_geometry
+                self._schedule_geometry_save()
+    
+    def _schedule_geometry_save(self):
+        """Schedule geometry save with debounce."""
+        # Cancel previous timer if exists
+        if self.geometry_save_timer:
+            self.root.after_cancel(self.geometry_save_timer)
+        
+        # Schedule save after delay (debounce)
+        self.geometry_save_timer = self.root.after(
+            self.geometry_save_delay, 
+            self._save_geometry_delayed
+        )
+    
+    def _save_geometry_delayed(self):
+        """Save geometry after delay (called by timer)."""
+        try:
+            self._save_window_geometry()
+            self.geometry_save_timer = None
+            
+            # Geometry saved successfully in background
+            
+        except Exception as e:
+            print(f"Warning: Failed to auto-save geometry: {e}")
+    
+    def _calculate_template_dialog_size(self, available_templates):
+        """Calculate optimal dialog size based on template content."""
+        try:
+            # Base dimensions
+            min_width, min_height = 350, 250
+            max_width, max_height = 800, 600
+            
+            # Calculate width based on longest template name
+            max_name_length = max(len(template) for template in available_templates) if available_templates else 20
+            # Approximate character width in pixels (using Consolas font)
+            char_width = 8
+            needed_width = max_name_length * char_width + 100  # Add padding for scrollbars and margins
+            
+            # Calculate height based on number of templates
+            template_count = len(available_templates)
+            # Each listbox item is approximately 16 pixels high
+            needed_height = min(template_count * 16 + 150, 400)  # +150 for headers, buttons, padding
+            
+            # Apply bounds
+            optimal_width = max(min_width, min(needed_width, max_width))
+            optimal_height = max(min_height, min(needed_height, max_height))
+            
+            return f"{optimal_width}x{optimal_height}"
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate dialog size: {e}")
+            return "450x350"
+    
+    def _load_template_dialog_geometry(self, default_size):
+        """Load saved template dialog geometry or use calculated default."""
+        try:
+            if os.path.exists(self.WINDOW_SETTINGS_FILE):
+                with open(self.WINDOW_SETTINGS_FILE, 'r') as f:
+                    settings = json.load(f)
+                    dialog_geometry = settings.get('template_dialog_geometry', None)
+                    
+                    if dialog_geometry:
+                        # Parse geometry to validate it
+                        if 'x' in dialog_geometry and '+' in dialog_geometry:
+                            return dialog_geometry
+                    
+            # If no saved geometry or invalid, use calculated size with default position
+            return f"{default_size}+150+150"
+            
+        except Exception as e:
+            print(f"Warning: Could not load template dialog geometry: {e}")
+            return f"{default_size}+150+150"
+    
+    def _save_template_dialog_geometry(self, dialog_window):
+        """Save template dialog geometry to settings."""
+        try:
+            # Get current geometry
+            geometry = dialog_window.geometry()
+            
+            # Load existing settings
+            settings = {}
+            if os.path.exists(self.WINDOW_SETTINGS_FILE):
+                with open(self.WINDOW_SETTINGS_FILE, 'r') as f:
+                    settings = json.load(f)
+            
+            # Update template dialog geometry
+            settings['template_dialog_geometry'] = geometry
+            
+            # Save back to file
+            with open(self.WINDOW_SETTINGS_FILE, 'w') as f:
+                json.dump(settings, f, indent=2)
+                
+        except Exception as e:
+            print(f"Warning: Could not save template dialog geometry: {e}")
+    
+    def _calculate_preview_dialog_size(self, image_width, image_height):
+        """Calculate optimal preview dialog size based on image dimensions."""
+        try:
+            # Base dimensions for UI elements (header, buttons, padding)
+            ui_height = 120
+            ui_width = 80
+            
+            # Maximum display area
+            max_display_width = 600
+            max_display_height = 400
+            
+            # Calculate needed size to fit image comfortably
+            needed_width = min(image_width + ui_width, max_display_width + ui_width)
+            needed_height = min(image_height + ui_height, max_display_height + ui_height)
+            
+            # Minimum dialog size
+            min_width, min_height = 300, 200
+            
+            # Apply bounds
+            optimal_width = max(min_width, needed_width)
+            optimal_height = max(min_height, needed_height)
+            
+            return f"{optimal_width}x{optimal_height}"
+            
+        except Exception as e:
+            print(f"Warning: Could not calculate preview dialog size: {e}")
+            return "400x350"
+    
+    def _load_preview_dialog_geometry(self, default_size):
+        """Load saved preview dialog geometry or use calculated default."""
+        try:
+            if os.path.exists(self.WINDOW_SETTINGS_FILE):
+                with open(self.WINDOW_SETTINGS_FILE, 'r') as f:
+                    settings = json.load(f)
+                    dialog_geometry = settings.get('preview_dialog_geometry', None)
+                    
+                    if dialog_geometry:
+                        # Parse geometry to validate it
+                        if 'x' in dialog_geometry and '+' in dialog_geometry:
+                            return dialog_geometry
+                    
+            # If no saved geometry or invalid, use calculated size with default position
+            return f"{default_size}+200+200"
+            
+        except Exception as e:
+            print(f"Warning: Could not load preview dialog geometry: {e}")
+            return f"{default_size}+200+200"
+    
+    def _save_preview_dialog_geometry(self, dialog_window):
+        """Save preview dialog geometry to settings."""
+        try:
+            # Get current geometry
+            geometry = dialog_window.geometry()
+            
+            # Load existing settings
+            settings = {}
+            if os.path.exists(self.WINDOW_SETTINGS_FILE):
+                with open(self.WINDOW_SETTINGS_FILE, 'r') as f:
+                    settings = json.load(f)
+            
+            # Update preview dialog geometry
+            settings['preview_dialog_geometry'] = geometry
+            
+            # Save back to file
+            with open(self.WINDOW_SETTINGS_FILE, 'w') as f:
+                json.dump(settings, f, indent=2)
+                
+        except Exception as e:
+            print(f"Warning: Could not save preview dialog geometry: {e}")
     
     def _setup_run_tab(self):
         """Setup the Run tab with bot control and logging."""
@@ -721,7 +1188,7 @@ class StumbleBotApp:
             
         except Exception as e:
             self._add_log(f"Error starting bot: {e}")
-            messagebox.showerror("Error", f"Failed to start bot: {e}")
+            self.show_centered_messagebox("Error", f"Failed to start bot: {e}", "error")
     
     def _stop_bot(self):
         """Stop the bot."""
@@ -1146,7 +1613,7 @@ Click "Debug Info" for current status information.
             
             if not windows:
                 self._add_log(f"No windows found with title '{window_title}'")
-                messagebox.showinfo("Window Detection", f"No windows found with title '{window_title}'")
+                self.show_centered_messagebox("Window Detection", f"No windows found with title '{window_title}'", "info")
             elif len(windows) == 1:
                 window = windows[0]
                 self._add_log(f"Window found: {window['process_name']} (PID: {window['pid']})")
@@ -1625,7 +2092,7 @@ Click "Debug Info" for current status information.
             # Get template name
             template_name = self.template_name_entry.get().strip()
             if not template_name:
-                messagebox.showerror("No Template Name", "Please enter a template name first")
+                self.show_centered_messagebox("No Template Name", "Please enter a template name first", "error")
                 return
             
             # Remove .png extension if present
@@ -1732,7 +2199,8 @@ Click "Debug Info" for current status information.
                 ("All files", "*.*")
             ]
             
-            file_paths = filedialog.askopenfilenames(
+            file_paths = self.show_centered_filedialog(
+                "open_multiple",
                 title="Select Template Images to Import",
                 filetypes=filetypes
             )
@@ -1819,10 +2287,17 @@ Click "Debug Info" for current status information.
             # Update config from GUI first
             self._save_gui_to_config()
             
-            # Ask for filename
+            # Ask for filename with centered dialog
+            temp_window = tk.Toplevel(self.root)
+            temp_window.withdraw()  # Hide the temporary window
+            self.center_dialog_on_main(temp_window)
+            
             filename = tk.simpledialog.askstring("Save Configuration", 
                                                 "Enter configuration name:", 
-                                                initialvalue="my_config.json")
+                                                initialvalue="my_config.json",
+                                                parent=temp_window)
+            
+            temp_window.destroy()  # Clean up
             
             if filename:
                 # Ensure .json extension
@@ -1831,7 +2306,7 @@ Click "Debug Info" for current status information.
                 
                 if self.config_manager.save_config(filename):
                     self._add_log(f"Configuration saved as '{filename}'")
-                    messagebox.showinfo("Success", f"Configuration saved as '{filename}'")
+                    self.show_centered_messagebox("Success", f"Configuration saved as '{filename}'", "info")
                 else:
                     self._add_log(f"Failed to save configuration '{filename}'")
                     messagebox.showerror("Error", f"Failed to save configuration '{filename}'")
@@ -1847,7 +2322,7 @@ Click "Debug Info" for current status information.
             config_files = self.config_manager.get_config_files()
             
             if not config_files:
-                messagebox.showinfo("No Configurations", "No configuration files found")
+                self.show_centered_messagebox("No Configurations", "No configuration files found", "info")
                 return
             
             # Let user choose config file
@@ -1897,7 +2372,7 @@ Click "Debug Info" for current status information.
                     self._clear_gui_fields()
                     self._load_config_to_gui()
                     
-                    messagebox.showinfo("Success", f"Configuration loaded from '{selected_file}'")
+                    self.show_centered_messagebox("Success", f"Configuration loaded from '{selected_file}'", "info")
                 else:
                     self._add_log(f"Failed to load configuration '{selected_file}'")
                     messagebox.showerror("Error", f"Failed to load configuration '{selected_file}'")
@@ -1913,7 +2388,8 @@ Click "Debug Info" for current status information.
             self._save_gui_to_config()
             
             # Ask for export location
-            filename = filedialog.asksaveasfilename(
+            filename = self.show_centered_filedialog(
+                "save",
                 title="Export Configuration",
                 defaultextension=".json",
                 filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
@@ -1935,7 +2411,8 @@ Click "Debug Info" for current status information.
         """Import configuration from chosen file."""
         try:
             # Ask for import file
-            filename = filedialog.askopenfilename(
+            filename = self.show_centered_filedialog(
+                "open",
                 title="Import Configuration",
                 filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
             )
@@ -2069,7 +2546,7 @@ Click "Debug Info" for current status information.
             self._add_log(f"Error clearing GUI fields: {e}")
     
     def _browse_templates(self):
-        """Show available templates for selection."""
+        """Show available templates for selection with adaptive sizing."""
         try:
             # Get available templates
             available_templates = []
@@ -2081,24 +2558,70 @@ Click "Debug Info" for current status information.
                         available_templates.append(file)
             
             if not available_templates:
-                messagebox.showinfo("No Templates", "No template files found in templates/ directory")
+                self.show_centered_messagebox("No Templates", "No template files found in templates/ directory", "info")
                 return
+            
+            # Calculate optimal window size based on content
+            dialog_size = self._calculate_template_dialog_size(available_templates)
+            dialog_geometry = self._load_template_dialog_geometry(dialog_size)
             
             # Create selection window
             selection_window = tk.Toplevel(self.root)
             selection_window.title("Select Template")
-            selection_window.geometry("400x300")
+            selection_window.geometry(dialog_geometry)
             selection_window.transient(self.root)
             selection_window.grab_set()
             
-            tk.Label(selection_window, text="Available Templates:", font=("Arial", 12)).pack(pady=10)
+            # Make window resizable
+            selection_window.resizable(True, True)
+            selection_window.minsize(350, 250)
+            selection_window.maxsize(800, 600)
             
-            # Listbox for templates
-            listbox = tk.Listbox(selection_window, height=10)
-            listbox.pack(fill="both", expand=True, padx=20, pady=10)
+            # Center the selection window
+            self.center_dialog_on_main(selection_window)
             
-            for template in available_templates:
+            # Header frame
+            header_frame = tk.Frame(selection_window)
+            header_frame.pack(fill="x", padx=10, pady=(10, 5))
+            
+            tk.Label(header_frame, text="Available Templates:", font=("Arial", 12, "bold")).pack(side="left")
+            
+            # Template count label
+            count_label = tk.Label(header_frame, text=f"({len(available_templates)} templates)", 
+                                 font=("Arial", 10), fg="gray")
+            count_label.pack(side="right")
+            
+            # Listbox frame with scrollbars
+            listbox_frame = tk.Frame(selection_window)
+            listbox_frame.pack(fill="both", expand=True, padx=10, pady=5)
+            
+            # Create listbox with scrollbars
+            listbox = tk.Listbox(listbox_frame, font=("Consolas", 10))
+            v_scrollbar = tk.Scrollbar(listbox_frame, orient="vertical", command=listbox.yview)
+            h_scrollbar = tk.Scrollbar(listbox_frame, orient="horizontal", command=listbox.xview)
+            
+            listbox.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+            
+            # Grid layout for listbox and scrollbars
+            listbox.grid(row=0, column=0, sticky="nsew")
+            v_scrollbar.grid(row=0, column=1, sticky="ns")
+            h_scrollbar.grid(row=1, column=0, sticky="ew")
+            
+            listbox_frame.grid_rowconfigure(0, weight=1)
+            listbox_frame.grid_columnconfigure(0, weight=1)
+            
+            # Add templates to listbox (sorted for better user experience)
+            sorted_templates = sorted(available_templates, key=str.lower)
+            for template in sorted_templates:
                 listbox.insert("end", template)
+            
+            # Status frame
+            status_frame = tk.Frame(selection_window)
+            status_frame.pack(fill="x", padx=10, pady=5)
+            
+            status_label = tk.Label(status_frame, text="Double-click to select, or use buttons below", 
+                                  font=("Arial", 9), fg="gray")
+            status_label.pack()
             
             selected_template = None
             
@@ -2106,25 +2629,44 @@ Click "Debug Info" for current status information.
                 nonlocal selected_template
                 selection = listbox.curselection()
                 if selection:
-                    selected_template = available_templates[selection[0]]
+                    selected_template = sorted_templates[selection[0]]
+                    self._save_template_dialog_geometry(selection_window)
                     selection_window.destroy()
+            
+            def on_double_click(event):
+                on_select()
             
             def on_preview():
                 selection = listbox.curselection()
                 if selection:
-                    template_name = available_templates[selection[0]]
+                    template_name = sorted_templates[selection[0]]
                     self._show_template_preview(template_name)
             
             def on_cancel():
+                self._save_template_dialog_geometry(selection_window)
                 selection_window.destroy()
             
-            # Buttons
-            btn_frame = tk.Frame(selection_window)
-            btn_frame.pack(pady=10)
+            # Bind double-click
+            listbox.bind('<Double-Button-1>', on_double_click)
             
-            tk.Button(btn_frame, text="Select", command=on_select, width=10).pack(side="left", padx=5)
-            tk.Button(btn_frame, text="Preview", command=on_preview, width=10).pack(side="left", padx=5)
-            tk.Button(btn_frame, text="Cancel", command=on_cancel, width=10).pack(side="left", padx=5)
+            # Buttons frame
+            btn_frame = tk.Frame(selection_window)
+            btn_frame.pack(fill="x", padx=10, pady=(5, 10))
+            
+            # Button styling
+            btn_style = {"width": 12, "height": 1}
+            
+            tk.Button(btn_frame, text="✓ Select", command=on_select, bg="#4CAF50", fg="white", **btn_style).pack(side="left", padx=5)
+            tk.Button(btn_frame, text="👁 Preview", command=on_preview, bg="#2196F3", fg="white", **btn_style).pack(side="left", padx=5)
+            tk.Button(btn_frame, text="✕ Cancel", command=on_cancel, **btn_style).pack(side="right", padx=5)
+            
+            # Bind window close event to save geometry
+            selection_window.protocol("WM_DELETE_WINDOW", on_cancel)
+            
+            # Auto-select first item for convenience
+            if sorted_templates:
+                listbox.selection_set(0)
+                listbox.focus_set()
             
             # Wait for window to close
             selection_window.wait_window()
@@ -2155,7 +2697,7 @@ Click "Debug Info" for current status information.
             self._add_log(f"Error previewing template: {e}")
     
     def _show_template_preview(self, template_filename: str):
-        """Show template preview window."""
+        """Show template preview window with enhanced sizing and persistence."""
         try:
             import cv2
             from PIL import Image, ImageTk
@@ -2163,56 +2705,143 @@ Click "Debug Info" for current status information.
             template_path = os.path.join("templates", template_filename)
             
             if not os.path.exists(template_path):
-                messagebox.showerror("Template Not Found", f"Template file not found: {template_path}")
+                self.show_centered_messagebox("Template Not Found", f"Template file not found: {template_path}", "error")
                 return
             
             # Load template image
             template_cv = cv2.imread(template_path)
             if template_cv is None:
-                messagebox.showerror("Error", f"Could not load template: {template_path}")
+                self.show_centered_messagebox("Error", f"Could not load template: {template_path}", "error")
                 return
             
             # Convert BGR to RGB for display
             template_rgb = cv2.cvtColor(template_cv, cv2.COLOR_BGR2RGB)
             
+            # Calculate optimal preview window size based on image dimensions
+            image_height, image_width = template_cv.shape[:2]
+            dialog_size = self._calculate_preview_dialog_size(image_width, image_height)
+            dialog_geometry = self._load_preview_dialog_geometry(dialog_size)
+            
             # Create preview window
             preview_window = tk.Toplevel(self.root)
             preview_window.title(f"Template Preview: {template_filename}")
+            preview_window.geometry(dialog_geometry)
             preview_window.transient(self.root)
+            preview_window.resizable(True, True)
+            preview_window.minsize(300, 200)
+            
+            # Center the preview window
+            self.center_dialog_on_main(preview_window)
+            
+            # Header frame
+            header_frame = tk.Frame(preview_window)
+            header_frame.pack(fill="x", padx=10, pady=(10, 5))
+            
+            # Template info
+            filename_label = tk.Label(header_frame, text=f"📁 {template_filename}", 
+                                    font=("Arial", 12, "bold"))
+            filename_label.pack(side="left")
+            
+            # Image dimensions info
+            size_label = tk.Label(header_frame, text=f"{image_width}×{image_height} px", 
+                                font=("Arial", 10), fg="gray")
+            size_label.pack(side="right")
+            
+            # Image frame with scrollable canvas
+            image_frame = tk.Frame(preview_window)
+            image_frame.pack(fill="both", expand=True, padx=10, pady=5)
+            
+            # Create canvas with scrollbars for large images
+            canvas = tk.Canvas(image_frame, bg="white")
+            v_scrollbar = tk.Scrollbar(image_frame, orient="vertical", command=canvas.yview)
+            h_scrollbar = tk.Scrollbar(image_frame, orient="horizontal", command=canvas.xview)
+            
+            canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+            
+            # Create scrollable frame
+            scrollable_frame = tk.Frame(canvas)
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+            
+            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
             
             # Convert to PhotoImage for display
             pil_image = Image.fromarray(template_rgb)
             
-            # Scale image if too large
-            max_size = (400, 400)
-            pil_image.thumbnail(max_size, Image.Resampling.LANCZOS)
+            # Scale image if it's too large for comfortable viewing
+            max_display_size = (600, 400)
+            display_image = pil_image.copy()
+            display_image.thumbnail(max_display_size, Image.Resampling.LANCZOS)
             
-            photo = ImageTk.PhotoImage(pil_image)
+            photo = ImageTk.PhotoImage(display_image)
             
             # Display image
-            image_label = tk.Label(preview_window, image=photo)
+            image_label = tk.Label(scrollable_frame, image=photo, bg="white")
             image_label.image = photo  # Keep a reference
-            image_label.pack(padx=20, pady=20)
+            image_label.pack(padx=10, pady=10)
             
-            # Info label
-            info_text = f"File: {template_filename}\nSize: {template_cv.shape[1]}x{template_cv.shape[0]} pixels"
-            info_label = tk.Label(preview_window, text=info_text, font=("Arial", 10))
-            info_label.pack(pady=(0, 10))
+            # Grid layout for canvas and scrollbars
+            canvas.grid(row=0, column=0, sticky="nsew")
+            v_scrollbar.grid(row=0, column=1, sticky="ns")
+            h_scrollbar.grid(row=1, column=0, sticky="ew")
+            
+            image_frame.grid_rowconfigure(0, weight=1)
+            image_frame.grid_columnconfigure(0, weight=1)
+            
+            # Info frame
+            info_frame = tk.Frame(preview_window)
+            info_frame.pack(fill="x", padx=10, pady=5)
+            
+            # File info
+            file_size = os.path.getsize(template_path)
+            file_size_str = f"{file_size} bytes"
+            if file_size > 1024:
+                file_size_str = f"{file_size/1024:.1f} KB"
+            
+            info_text = f"File Size: {file_size_str} | Original: {image_width}×{image_height}"
+            if display_image.size != pil_image.size:
+                info_text += f" | Displayed: {display_image.size[0]}×{display_image.size[1]}"
+                
+            info_label = tk.Label(info_frame, text=info_text, font=("Arial", 9), fg="gray")
+            info_label.pack()
+            
+            # Buttons frame
+            btn_frame = tk.Frame(preview_window)
+            btn_frame.pack(fill="x", padx=10, pady=(5, 10))
             
             # Test detection button
             def test_detection():
+                self._save_preview_dialog_geometry(preview_window)
                 preview_window.destroy()
                 self._test_template_detection(template_filename)
             
-            test_btn = tk.Button(preview_window, text="Test Detection", command=test_detection)
-            test_btn.pack(pady=10)
+            def close_preview():
+                self._save_preview_dialog_geometry(preview_window)
+                preview_window.destroy()
             
-            # Close button
-            close_btn = tk.Button(preview_window, text="Close", command=preview_window.destroy)
-            close_btn.pack(pady=(0, 20))
+            # Button styling
+            btn_style = {"height": 1, "width": 15}
+            
+            test_btn = tk.Button(btn_frame, text="🔍 Test Detection", command=test_detection, 
+                               bg="#FF9800", fg="white", **btn_style)
+            test_btn.pack(side="left", padx=5)
+            
+            close_btn = tk.Button(btn_frame, text="✕ Close", command=close_preview, **btn_style)
+            close_btn.pack(side="right", padx=5)
+            
+            # Bind window close event
+            preview_window.protocol("WM_DELETE_WINDOW", close_preview)
+            
+            # Bind mouse wheel scrolling
+            def _on_mousewheel(event):
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+            canvas.bind("<MouseWheel>", _on_mousewheel)
             
         except Exception as e:
-            messagebox.showerror("Preview Error", f"Error showing preview: {e}")
+            self.show_centered_messagebox("Preview Error", f"Error showing preview: {e}", "error")
     
     def _test_template_detection(self, template_filename: str):
         """Test template detection and show results."""
@@ -2408,10 +3037,20 @@ Notes:
     
     def _on_closing(self):
         """Handle application closing."""
-        if self.bot_thread and self.bot_thread.is_running():
-            self.bot_thread.stop_bot()
+        # Cancel any pending geometry save timer
+        if self.geometry_save_timer:
+            self.root.after_cancel(self.geometry_save_timer)
+            self.geometry_save_timer = None
         
-        self.root.destroy()
+        # Save window geometry before closing (final save)
+        self._save_window_geometry()
+        
+        if self.bot_thread and self.bot_thread.is_running():
+            if self.show_centered_messagebox("Confirm Exit", "Bot is running. Stop bot and exit?", "question"):
+                self.bot_thread.stop_bot()
+                self.root.destroy()
+        else:
+            self.root.destroy()
     
     def _toggle_rule_enabled(self, rule_index: int):
         """Toggle the enabled state of a rule."""
@@ -2452,6 +3091,9 @@ Notes:
                     popup.title(f"Template Preview - {rule.template}")
                     popup.geometry("400x400")
                     popup.configure(bg="#2b2b2b")
+                    
+                    # Center the popup window
+                    self.center_dialog_on_main(popup)
                     
                     # Load and display image
                     img = Image.open(template_path)

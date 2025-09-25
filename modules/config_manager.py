@@ -15,7 +15,6 @@ import shutil
 
 
 @dataclass
-@dataclass
 class DetectionRule:
     """Data class for detection rules."""
     name: str
