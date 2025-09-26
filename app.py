@@ -18,6 +18,30 @@ import json
 from typing import List, Dict, Optional
 import queue
 from PIL import Image, ImageTk
+try:
+    from pynput import keyboard, mouse
+    PYNPUT_AVAILABLE = True
+except ImportError:
+    PYNPUT_AVAILABLE = False
+    print("Warning: pynput not available. KB2JOY features will be disabled.")
+
+# Windows-specific imports for keyboard suppression
+import ctypes
+import ctypes.wintypes
+try:
+    from ctypes import wintypes
+    WINDOWS_HOOK_AVAILABLE = True
+except ImportError:
+    WINDOWS_HOOK_AVAILABLE = False
+
+# Import Windows API for better key suppression
+try:
+    import win32api
+    import win32con
+    import win32gui
+    WINAPI_AVAILABLE = True
+except ImportError:
+    WINAPI_AVAILABLE = False
 
 from modules.window_manager import WindowManager
 from modules.image_detector import ImageDetector, TemplateManager
@@ -57,6 +81,25 @@ class StumbleBotApp:
         self.last_geometry = None
         self.geometry_save_delay = 1000  # 1 second delay before saving
         
+        # KB2JOY (Keyboard/Mouse to Joystick) variables
+        self.kb2joy_enabled = False
+        self.kb2joy_suppress_input = True  # Block original input by default
+        self.kb2joy_mappings = {}  # Maps keyboard/mouse inputs to Xbox buttons
+        self.kb2joy_listener = None
+        self.kb2joy_mouse_listener = None
+        self.kb2joy_capture_mode = False
+        self.kb2joy_suppress_enabled = True
+        self.kb2joy_keys_to_suppress = set()  # Track keys that should be suppressed
+        self.kb2joy_suppression_active = False
+        self.kb2joy_last_activity = 0
+        self.kb2joy_monitor_timer = None
+        
+        # Windows keyboard hook for proper suppression
+        self.kb2joy_hook = None
+        self.kb2joy_hook_installed = False
+        self.kb2joy_suppressed_keys = set()  # VK codes of keys to suppress
+        self.kb2joy_debug_mode = True  # Debug hook behavior (enabled by default for testing)
+        
         # Load default configuration
         self.config_manager.load_config()
         
@@ -90,11 +133,13 @@ class StumbleBotApp:
         self.tab_view.add("Run")
         self.tab_view.add("Configuration")
         self.tab_view.add("Joystick")
+        self.tab_view.add("KB2JOY")
         
         # Setup individual tabs
         self._setup_run_tab()
         self._setup_configuration_tab()
         self._setup_joystick_tab()
+        self._setup_kb2joy_tab()
         
         # Re-apply saved geometry AFTER all widgets are created
         # This ensures CustomTkinter doesn't override our saved size
@@ -1130,6 +1175,199 @@ class StumbleBotApp:
                      width=80).pack(side="left", padx=10)
         ctk.CTkButton(system_frame, text="START", command=lambda: self._delayed_button_press("START"), 
                      width=80).pack(side="left", padx=10)
+    
+    def _setup_kb2joy_tab(self):
+        """Setup the KB2JOY tab for keyboard/mouse to controller mapping."""
+        kb2joy_frame = self.tab_view.tab("KB2JOY")
+        
+        # Create scrollable frame
+        scroll_frame = ctk.CTkScrollableFrame(kb2joy_frame, width=750, height=550)
+        scroll_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Header section
+        header_frame = ctk.CTkFrame(scroll_frame)
+        header_frame.pack(fill="x", pady=(0, 10))
+        
+        header_label = ctk.CTkLabel(header_frame, text="KB2JOY - Keyboard/Mouse to Xbox Controller", 
+                                   font=ctk.CTkFont(size=18, weight="bold"))
+        header_label.pack(pady=(15, 10))
+        
+        # Check if pynput is available
+        if not PYNPUT_AVAILABLE:
+            error_frame = ctk.CTkFrame(header_frame)
+            error_frame.pack(fill="x", padx=10, pady=(0, 10))
+            
+            error_label = ctk.CTkLabel(error_frame, 
+                                     text="⚠️ pynput library not found. Install with: pip install pynput", 
+                                     font=ctk.CTkFont(size=12), 
+                                     text_color="orange")
+            error_label.pack(pady=10)
+            
+            install_btn = ctk.CTkButton(error_frame, text="Install pynput", 
+                                       command=self._install_pynput, 
+                                       width=150)
+            install_btn.pack(pady=5)
+            
+        description_label = ctk.CTkLabel(header_frame, 
+                                       text="Convert keyboard and mouse inputs to Xbox controller buttons in real-time", 
+                                       font=ctk.CTkFont(size=12), 
+                                       text_color="gray")
+        description_label.pack(pady=(0, 15))
+        
+        # Control section
+        control_frame = ctk.CTkFrame(scroll_frame)
+        control_frame.pack(fill="x", pady=(0, 10))
+        
+        control_header = ctk.CTkLabel(control_frame, text="Control", 
+                                    font=ctk.CTkFont(size=14, weight="bold"))
+        control_header.pack(pady=(10, 5))
+        
+        # Enable/Disable toggle
+        toggle_frame = ctk.CTkFrame(control_frame)
+        toggle_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.kb2joy_enabled_var = ctk.BooleanVar(value=False)
+        self.kb2joy_toggle = ctk.CTkSwitch(toggle_frame, 
+                                          text="Enable KB2JOY", 
+                                          variable=self.kb2joy_enabled_var,
+                                          command=self._toggle_kb2joy,
+                                          font=ctk.CTkFont(size=12, weight="bold"))
+        self.kb2joy_toggle.pack(side="left", padx=10, pady=10)
+        
+        # Status label
+        self.kb2joy_status_label = ctk.CTkLabel(toggle_frame, text="Status: Disabled", 
+                                              font=ctk.CTkFont(size=12))
+        self.kb2joy_status_label.pack(side="left", padx=20, pady=10)
+        
+        # Debug button
+        debug_btn = ctk.CTkButton(toggle_frame, text="Debug Hook", 
+                                 command=self._toggle_kb2joy_debug,
+                                 width=100)
+        debug_btn.pack(side="right", padx=5, pady=10)
+        
+        # Clear all mappings button
+        clear_btn = ctk.CTkButton(toggle_frame, text="Clear All Mappings", 
+                                 command=self._clear_all_mappings,
+                                 width=150)
+        clear_btn.pack(side="right", padx=10, pady=10)
+        
+        # Input suppression control
+        suppress_frame = ctk.CTkFrame(control_frame)
+        suppress_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.kb2joy_suppress_input_var = ctk.BooleanVar(value=True)
+        suppress_checkbox = ctk.CTkCheckBox(suppress_frame,
+                                          text="Block original keyboard input (recommended)", 
+                                          variable=self.kb2joy_suppress_input_var,
+                                          font=ctk.CTkFont(size=11))
+        suppress_checkbox.pack(side="left", padx=10, pady=5)
+        
+        suppress_info = ctk.CTkLabel(suppress_frame,
+                                   text="Converts keyboard keys to controller input. For complete suppression, run as Administrator.",
+                                   font=ctk.CTkFont(size=9),
+                                   text_color="gray")
+        suppress_info.pack(side="left", padx=10, pady=5)
+        
+        # Mapping section
+        mapping_frame = ctk.CTkFrame(scroll_frame)
+        mapping_frame.pack(fill="both", expand=True, pady=(0, 10))
+        
+        mapping_header = ctk.CTkLabel(mapping_frame, text="Input Mappings", 
+                                    font=ctk.CTkFont(size=14, weight="bold"))
+        mapping_header.pack(pady=(10, 5))
+        
+        # Instructions
+        instructions = ctk.CTkLabel(mapping_frame, 
+                                  text="Click 'Capture' next to a controller button, then press the keyboard key or mouse button you want to map to it",
+                                  font=ctk.CTkFont(size=10),
+                                  text_color="gray",
+                                  wraplength=700)
+        instructions.pack(pady=(0, 10))
+        
+        # Create mapping grid
+        self._setup_mapping_grid(mapping_frame)
+        
+        # Save/Load section
+        save_load_frame = ctk.CTkFrame(scroll_frame)
+        save_load_frame.pack(fill="x", pady=(0, 10))
+        
+        save_load_header = ctk.CTkLabel(save_load_frame, text="Configuration", 
+                                      font=ctk.CTkFont(size=14, weight="bold"))
+        save_load_header.pack(pady=(10, 5))
+        
+        btn_frame = ctk.CTkFrame(save_load_frame)
+        btn_frame.pack(pady=(0, 10))
+        
+        ctk.CTkButton(btn_frame, text="Save Mappings", command=self._save_kb2joy_config, width=120).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Load Mappings", command=self._load_kb2joy_config, width=120).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Export Config", command=self._export_kb2joy_config, width=120).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="Import Config", command=self._import_kb2joy_config, width=120).pack(side="left", padx=5)
+        
+        # Load existing mappings
+        self._load_kb2joy_mappings()
+    
+    def _setup_mapping_grid(self, parent):
+        """Setup the mapping grid with all Xbox controller buttons."""
+        # Create grid container
+        grid_frame = ctk.CTkFrame(parent)
+        grid_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
+        
+        # Xbox button categories
+        button_categories = {
+            "Face Buttons": ["A", "B", "X", "Y"],
+            "Shoulder Buttons": ["LB", "RB"],
+            "D-Pad": ["DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT"],
+            "System": ["START", "BACK"],
+            "Thumbsticks": ["LEFT_THUMB", "RIGHT_THUMB"],
+            "Left Stick": ["STICK_UP", "STICK_DOWN", "STICK_LEFT", "STICK_RIGHT", 
+                          "STICK_UP_LEFT", "STICK_UP_RIGHT", "STICK_DOWN_LEFT", "STICK_DOWN_RIGHT", "STICK_CENTER"]
+        }
+        
+        # Store mapping widgets for updates
+        self.mapping_widgets = {}
+        
+        row = 0
+        for category, buttons in button_categories.items():
+            # Category header
+            category_label = ctk.CTkLabel(grid_frame, text=category, 
+                                        font=ctk.CTkFont(size=13, weight="bold"))
+            category_label.grid(row=row, column=0, columnspan=3, sticky="w", padx=5, pady=(10, 5))
+            row += 1
+            
+            # Buttons in this category
+            for button in buttons:
+                # Button name
+                btn_label = ctk.CTkLabel(grid_frame, text=button, width=120)
+                btn_label.grid(row=row, column=0, sticky="w", padx=5, pady=2)
+                
+                # Current mapping display
+                mapping_label = ctk.CTkLabel(grid_frame, text="Not mapped", 
+                                           width=150, 
+                                           fg_color="gray20",
+                                           corner_radius=5)
+                mapping_label.grid(row=row, column=1, padx=5, pady=2)
+                
+                # Capture button
+                capture_btn = ctk.CTkButton(grid_frame, text="Capture", 
+                                          command=lambda b=button: self._capture_input_for_button(b),
+                                          width=80, height=25)
+                capture_btn.grid(row=row, column=2, padx=5, pady=2)
+                
+                # Clear button
+                clear_btn = ctk.CTkButton(grid_frame, text="Clear", 
+                                        command=lambda b=button: self._clear_mapping(b),
+                                        width=60, height=25,
+                                        fg_color="red", hover_color="darkred")
+                clear_btn.grid(row=row, column=3, padx=5, pady=2)
+                
+                # Store widgets for later updates
+                self.mapping_widgets[button] = {
+                    'label': mapping_label,
+                    'capture_btn': capture_btn,
+                    'clear_btn': clear_btn
+                }
+                
+                row += 1
     
     # Event handlers and utility methods
     
@@ -3045,6 +3283,10 @@ Notes:
         # Save window geometry before closing (final save)
         self._save_window_geometry()
         
+        # Stop KB2JOY if running
+        if hasattr(self, 'kb2joy_enabled') and self.kb2joy_enabled:
+            self._stop_kb2joy()
+        
         if self.bot_thread and self.bot_thread.is_running():
             if self.show_centered_messagebox("Confirm Exit", "Bot is running. Stop bot and exit?", "question"):
                 self.bot_thread.stop_bot()
@@ -3124,6 +3366,962 @@ Notes:
         except Exception as e:
             self._add_log(f"Error showing template preview: {e}")
             messagebox.showerror("Preview Error", f"Failed to show template preview: {e}")
+    
+    # KB2JOY Methods
+    
+    def _install_pynput(self):
+        """Install pynput library."""
+        try:
+            import subprocess
+            import sys
+            
+            self._add_log("Installing pynput library...")
+            result = subprocess.run([sys.executable, "-m", "pip", "install", "pynput"], 
+                                  capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                self._add_log("pynput installed successfully! Please restart the application.")
+                self.show_centered_messagebox("Success", "pynput installed successfully! Please restart the application.", "info")
+            else:
+                self._add_log(f"Failed to install pynput: {result.stderr}")
+                self.show_centered_messagebox("Error", f"Failed to install pynput: {result.stderr}", "error")
+                
+        except Exception as e:
+            self._add_log(f"Error installing pynput: {e}")
+            self.show_centered_messagebox("Error", f"Error installing pynput: {e}", "error")
+    
+    def _toggle_kb2joy(self):
+        """Toggle KB2JOY on/off."""
+        if not PYNPUT_AVAILABLE:
+            self.show_centered_messagebox("Error", "pynput library is required for KB2JOY functionality", "error")
+            self.kb2joy_enabled_var.set(False)
+            return
+        
+        if self.kb2joy_enabled_var.get():
+            self._start_kb2joy()
+        else:
+            self._stop_kb2joy()
+    
+    def _start_kb2joy(self):
+        """Start KB2JOY input capture."""
+        try:
+            if not PYNPUT_AVAILABLE:
+                return
+            
+            # Stop any existing listeners
+            self._stop_kb2joy()
+            
+            # Check if suppress setting is enabled
+            suppress_enabled = self.kb2joy_suppress_input_var.get() if hasattr(self, 'kb2joy_suppress_input_var') else True
+            
+            # Use a more robust approach - start without suppression and use a monitoring system
+            if suppress_enabled:
+                self._add_log("🔒 Attempting advanced suppression mode with monitoring")
+                # Try suppression with careful monitoring
+                try:
+                    self.kb2joy_listener = keyboard.Listener(
+                        on_press=self._on_kb2joy_key_press_monitored,
+                        on_release=self._on_kb2joy_key_release,
+                        suppress=True  # Enable suppression with monitoring
+                    )
+                    self.kb2joy_suppression_active = True
+                    self.kb2joy_last_activity = time.time()
+                except Exception as e:
+                    self._add_log(f"Suppression setup failed: {e}")
+                    # Fall back to non-suppression
+                    self.kb2joy_listener = keyboard.Listener(
+                        on_press=self._on_kb2joy_key_press,
+                        on_release=self._on_kb2joy_key_release,
+                        suppress=False
+                    )
+                    self.kb2joy_suppression_active = False
+            else:
+                self._add_log("🔓 Using conversion-only mode")
+                # Use without suppression
+                self.kb2joy_listener = keyboard.Listener(
+                    on_press=self._on_kb2joy_key_press,
+                    on_release=self._on_kb2joy_key_release,
+                    suppress=False
+                )
+                self.kb2joy_suppression_active = False
+            
+            # Create mouse listener without suppression (always safe)
+            self.kb2joy_mouse_listener = mouse.Listener(
+                on_click=self._on_kb2joy_mouse_click,
+                on_scroll=self._on_kb2joy_mouse_scroll,
+                suppress=False  # Mouse suppression disabled for safety
+            )
+            
+            # Store the suppress setting
+            self.kb2joy_suppress_enabled = suppress_enabled
+            
+            # Start listeners with error handling
+            try:
+                self.kb2joy_listener.start()
+                self.kb2joy_mouse_listener.start()
+                
+                self.kb2joy_enabled = True
+                self.kb2joy_status_label.configure(text="Status: Active - Capturing inputs")
+                self._add_log("KB2JOY started - capturing keyboard and mouse inputs")
+                
+                # Install Windows keyboard hook if suppression is enabled
+                if suppress_enabled and self.kb2joy_suppression_active:
+                    # Clear any old suppressed keys first
+                    self.kb2joy_suppressed_keys.clear()
+                    self._add_log("🧹 Cleared old suppressed keys")
+                    
+                    # Update suppressed keys based on current mappings
+                    self._update_suppressed_keys()
+                    
+                    # Install hook only if we have keys to suppress
+                    if self.kb2joy_suppressed_keys:
+                        hook_success = self._install_keyboard_hook()
+                        if hook_success:
+                            self._add_log("🔒 Advanced suppression system active")
+                        else:
+                            self._add_log("⚠️ Using basic suppression - may be less reliable")
+                    else:
+                        self._add_log("ℹ️ No keyboard mappings found - hook not needed")
+                    
+                    self._start_suppression_monitoring()
+                elif suppress_enabled:
+                    self.root.after(2000, self._test_suppression_working)
+                
+            except Exception as e:
+                self._add_log(f"Error starting KB2JOY listeners: {e}")
+                # Try fallback mode
+                self._start_kb2joy_fallback_mode()
+            
+            if suppress_enabled:
+                self._add_log("🔒 Attempting keyboard suppression mode")
+                self._add_log("⚠️  If keys still pass through, try running as Administrator")
+                self._add_log("⚠️  Will automatically fall back to conversion-only if suppression fails")
+            else:
+                self._add_log("🔓 Conversion-only mode - original inputs will pass through")
+            
+            self._add_log(f"Target mode: {'SUPPRESSION' if suppress_enabled else 'CONVERSION-ONLY'}")
+            
+        except Exception as e:
+            self._add_log(f"Error starting KB2JOY: {e}")
+            self.show_centered_messagebox("Error", f"Failed to start KB2JOY: {e}", "error")
+            self.kb2joy_enabled_var.set(False)
+    
+    def _stop_kb2joy(self):
+        """Stop KB2JOY input capture."""
+        try:
+            self.kb2joy_enabled = False
+            self.kb2joy_suppression_active = False
+            
+            # Stop pynput listeners
+            if self.kb2joy_listener:
+                self.kb2joy_listener.stop()
+                self.kb2joy_listener = None
+            
+            if self.kb2joy_mouse_listener:
+                self.kb2joy_mouse_listener.stop()
+                self.kb2joy_mouse_listener = None
+            
+            # Uninstall Windows keyboard hook
+            self._uninstall_keyboard_hook()
+            
+            # Cancel monitoring timer
+            if hasattr(self, 'kb2joy_monitor_timer') and self.kb2joy_monitor_timer:
+                self.root.after_cancel(self.kb2joy_monitor_timer)
+                self.kb2joy_monitor_timer = None
+            
+            self.kb2joy_status_label.configure(text="Status: Disabled")
+            self._add_log("🔓 KB2JOY stopped - all suppression disabled")
+            
+        except Exception as e:
+            self._add_log(f"Error stopping KB2JOY: {e}")
+    
+    def _on_kb2joy_key_press(self, key):
+        """Handle keyboard key press events. Always returns True to keep listener active."""
+        if not self.kb2joy_enabled or self.kb2joy_capture_mode:
+            return  # Don't process, but keep listener active
+        
+        try:
+            # Convert key to string representation
+            key_str = self._key_to_string(key)
+            
+            # Check if this key is mapped to any Xbox button
+            for xbox_button, mapped_input in self.kb2joy_mappings.items():
+                if mapped_input == key_str:
+                    # Send Xbox controller input
+                    button = self.virtual_controller.get_button_from_string(xbox_button)
+                    if button:
+                        self.virtual_controller.press_button(button, duration=0.1)
+                        
+                        # Log the conversion
+                        should_suppress = self.kb2joy_suppress_enabled
+                        
+                        if should_suppress:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED - original may pass through]")
+                        else:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED - pass-through mode]")
+                        
+                        # Break after first match to avoid multiple conversions
+                        break
+                    
+        except Exception as e:
+            self._add_log(f"Error processing key press: {e}")
+        
+        # Always return True (or None) to keep the listener active
+        # This prevents the "stops after first key" issue
+    
+    def _on_kb2joy_key_press_monitored(self, key):
+        """Handle keyboard key press with suppression and activity monitoring."""
+        if not self.kb2joy_enabled or self.kb2joy_capture_mode:
+            return True
+        
+        try:
+            # Update activity timestamp
+            self.kb2joy_last_activity = time.time()
+            
+            # Convert key to string representation
+            key_str = self._key_to_string(key)
+            
+            # Check if this key is mapped
+            for xbox_button, mapped_input in self.kb2joy_mappings.items():
+                if mapped_input == key_str:
+                    # Send Xbox controller input
+                    button = self.virtual_controller.get_button_from_string(xbox_button)
+                    if button:
+                        self.virtual_controller.press_button(button, duration=0.1)
+                        
+                        # Log the conversion - Windows hook handles actual suppression
+                        if self.kb2joy_suppression_active and self.kb2joy_hook_installed:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [HOOK SUPPRESSED]")
+                        elif self.kb2joy_suppression_active:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [SUPPRESSION ATTEMPTED]")
+                        else:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED]")
+                        
+                        # Always return True to keep pynput listener alive
+                        # The Windows hook handles the actual suppression
+                        return True
+                    break
+            
+            # Key not mapped, allow it through
+            return True
+            
+        except Exception as e:
+            self._add_log(f"Error in monitored handler: {e}")
+            # On error, switch to safe mode
+            self._switch_to_safe_mode()
+            return True
+    
+    def _on_kb2joy_key_press_with_suppression(self, key):
+        """Handle keyboard key press events WITH suppression. Uses a safer approach."""
+        if not self.kb2joy_enabled or self.kb2joy_capture_mode:
+            return True  # Allow input to pass through, keep listener active
+        
+        try:
+            # Convert key to string representation
+            key_str = self._key_to_string(key)
+            
+            # Check if this key is mapped to any Xbox button
+            is_mapped = False
+            for xbox_button, mapped_input in self.kb2joy_mappings.items():
+                if mapped_input == key_str:
+                    is_mapped = True
+                    # Send Xbox controller input
+                    button = self.virtual_controller.get_button_from_string(xbox_button)
+                    if button:
+                        self.virtual_controller.press_button(button, duration=0.1)
+                        
+                        # Check if we should suppress the input
+                        if self.kb2joy_suppress_enabled:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [ATTEMPTING BLOCK]")
+                            # Try to suppress but be prepared to fall back
+                            try:
+                                return False  # Attempt suppression
+                            except:
+                                # If suppression fails, log and continue without suppression
+                                self._add_log(f"KB2JOY: Suppression failed for {key_str}, switching to fallback mode")
+                                self._switch_to_fallback_mode()
+                                return True
+                        else:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED]")
+                            return True   # Allow mapped keys to pass through
+                    break
+            
+            # Key not mapped - always allow it to pass through
+            return True
+                    
+        except Exception as e:
+            self._add_log(f"Error in suppression handler: {e}")
+            # On any error, switch to safe fallback mode
+            self._switch_to_fallback_mode()
+            return True  # Always allow input on error to keep listener alive
+    
+    def _start_kb2joy_fallback_mode(self):
+        """Start KB2JOY in fallback mode without suppression."""
+        try:
+            self._add_log("🔄 Starting KB2JOY in fallback mode (no suppression)")
+            
+            # Stop any existing listeners
+            self._stop_kb2joy()
+            
+            # Create non-suppressing listeners
+            self.kb2joy_listener = keyboard.Listener(
+                on_press=self._on_kb2joy_key_press,
+                on_release=self._on_kb2joy_key_release,
+                suppress=False
+            )
+            
+            self.kb2joy_mouse_listener = mouse.Listener(
+                on_click=self._on_kb2joy_mouse_click,
+                on_scroll=self._on_kb2joy_mouse_scroll,
+                suppress=False
+            )
+            
+            # Start listeners
+            self.kb2joy_listener.start()
+            self.kb2joy_mouse_listener.start()
+            
+            self.kb2joy_enabled = True
+            self.kb2joy_suppress_enabled = False  # Force disable suppression
+            self.kb2joy_status_label.configure(text="Status: Active - Conversion only (no suppression)")
+            self._add_log("KB2JOY fallback mode active - keys will be converted but not suppressed")
+            
+        except Exception as e:
+            self._add_log(f"Error starting KB2JOY fallback mode: {e}")
+            self.show_centered_messagebox("Error", f"Failed to start KB2JOY: {e}", "error")
+            self.kb2joy_enabled_var.set(False)
+    
+    def _test_suppression_working(self):
+        """Test if suppression is actually working."""
+        try:
+            if not self.kb2joy_enabled:
+                return
+                
+            # Check if listener is still running
+            if self.kb2joy_listener and self.kb2joy_listener.running:
+                self._add_log("✅ KB2JOY suppression mode is stable and running")
+                if self.kb2joy_suppress_enabled:
+                    self._add_log("💡 Test suppression: Map a key and press it in Notepad")
+                    self._add_log("💡 If the key still appears in Notepad, run as Administrator")
+            else:
+                self._add_log("⚠️ KB2JOY listener stopped - restarting in fallback mode")
+                self._start_kb2joy_fallback_mode()
+                
+        except Exception as e:
+            self._add_log(f"Error testing suppression: {e}")
+            self._start_kb2joy_fallback_mode()
+    
+    def _switch_to_fallback_mode(self):
+        """Switch to fallback mode when suppression fails during operation."""
+        try:
+            if not self.kb2joy_enabled:
+                return
+                
+            self._add_log("⚠️ Suppression failed during operation - switching to fallback mode")
+            
+            # Restart in fallback mode
+            self.root.after(100, self._restart_in_fallback_mode)
+            
+        except Exception as e:
+            self._add_log(f"Error switching to fallback mode: {e}")
+    
+    def _restart_in_fallback_mode(self):
+        """Restart KB2JOY in fallback mode."""
+        try:
+            # Store current state
+            was_enabled = self.kb2joy_enabled
+            current_mappings = self.kb2joy_mappings.copy()
+            
+            # Stop current listeners
+            self._stop_kb2joy()
+            
+            # Wait a moment
+            time.sleep(0.1)
+            
+            # Restart in fallback mode if it was enabled
+            if was_enabled:
+                self.kb2joy_mappings = current_mappings  # Restore mappings
+                self._start_kb2joy_fallback_mode()
+                
+        except Exception as e:
+            self._add_log(f"Error restarting in fallback mode: {e}")
+    
+    def _on_kb2joy_key_release(self, key):
+        """Handle keyboard key release events."""
+        # For now, we use press_button with duration, so no release handling needed
+        # Always return True to keep listener active
+        return
+    
+    def _on_kb2joy_mouse_click(self, x, y, button, pressed):
+        """Handle mouse click events. Returns False to suppress input if converted."""
+        if not self.kb2joy_enabled or self.kb2joy_capture_mode or not pressed:
+            return True  # Allow input to pass through
+        
+        try:
+            # Convert mouse button to string
+            button_str = f"mouse_{button.name.lower()}"
+            
+            # Check if this mouse button is mapped
+            for xbox_button, mapped_input in self.kb2joy_mappings.items():
+                if mapped_input == button_str:
+                    # Send Xbox controller input
+                    controller_button = self.virtual_controller.get_button_from_string(xbox_button)
+                    if controller_button:
+                        self.virtual_controller.press_button(controller_button, duration=0.1)
+                        
+                        # For mouse, we always allow the input to pass through to avoid losing mouse control
+                        # We only convert to controller input but don't block the original
+                        self._add_log(f"KB2JOY: {button_str} -> {xbox_button} [MOUSE CONVERTED - original input preserved]")
+                        return True  # Always allow mouse input to pass through for safety
+            
+            # Mouse button not mapped, allow it to pass through
+            return True
+                        
+        except Exception as e:
+            self._add_log(f"Error processing mouse click: {e}")
+            return True  # Allow input on error
+    
+    def _start_suppression_monitoring(self):
+        """Start periodic monitoring of suppression system"""
+        if hasattr(self, 'kb2joy_monitor_timer') and self.kb2joy_monitor_timer:
+            self.root.after_cancel(self.kb2joy_monitor_timer)
+        
+        self._check_suppression_health()
+    
+    def _check_suppression_health(self):
+        """Check if suppression system is still working"""
+        if not self.kb2joy_enabled or not self.kb2joy_suppression_active:
+            return
+        
+        current_time = time.time()
+        time_since_activity = current_time - self.kb2joy_last_activity
+        
+        # If no activity for 30+ seconds and we think suppression is active,
+        # the listener might have died
+        if time_since_activity > 30:
+            self._add_log(f"⚠️ No KB2JOY activity for {time_since_activity:.1f}s, checking health...")
+            
+            # Check if listeners are still running
+            if (not hasattr(self.kb2joy_listener, 'running') or 
+                not self.kb2joy_listener.running):
+                self._add_log("❌ Keyboard listener stopped, switching to safe mode")
+                self._switch_to_safe_mode()
+                return
+        
+        # Schedule next check
+        self.kb2joy_monitor_timer = self.root.after(5000, self._check_suppression_health)
+    
+    def _switch_to_safe_mode(self):
+        """Switch to safe mode (no suppression) when issues detected"""
+        try:
+            self._add_log("🛡️ Switching to safe mode due to suppression issues")
+            
+            # Stop current system
+            self._stop_kb2joy()
+            
+            # Uncheck suppression option
+            self.suppress_original_var.set(False)
+            
+            # Update status
+            self.status_label.configure(text="KB2JOY Active (Safe Mode - Suppression Disabled)")
+            
+            # Start without suppression
+            self._start_kb2joy_basic()
+            
+        except Exception as e:
+            self._add_log(f"Error switching to safe mode: {e}")
+            self.status_label.configure(text=f"KB2JOY Error: {str(e)}")
+    
+    def _start_kb2joy_basic(self):
+        """Start basic KB2JOY without suppression"""
+        try:
+            # Start keyboard listener
+            self.kb2joy_listener = keyboard.Listener(
+                on_press=self._on_kb2joy_key_press
+            )
+            self.kb2joy_listener.start()
+            
+            # Start mouse listener
+            self.kb2joy_mouse_listener = mouse.Listener(
+                on_click=self._on_kb2joy_mouse_click
+            )
+            self.kb2joy_mouse_listener.start()
+            
+            # Mark as active but suppression as inactive
+            self.kb2joy_enabled = True
+            self.kb2joy_suppression_active = False
+            
+            self._add_log("✅ KB2JOY started in basic mode (no suppression)")
+            
+        except Exception as e:
+            self._add_log(f"Error starting basic KB2JOY: {e}")
+            raise
+    
+    def _install_keyboard_hook(self):
+        """Install Windows keyboard hook for proper key suppression."""
+        if not WINDOWS_HOOK_AVAILABLE:
+            self._add_log("❌ Windows hook not available - suppression will be limited")
+            return False
+            
+        try:
+            # Define Windows constants
+            WH_KEYBOARD_LL = 13
+            WM_KEYDOWN = 0x0100
+            WM_SYSKEYDOWN = 0x0104
+            
+            # Store reference to self for the hook procedure
+            app_ref = self
+            
+            # Define hook procedure with safer access to app state
+            def low_level_keyboard_proc(nCode, wParam, lParam):
+                try:
+                    # Only process if we should and if suppression is active
+                    if (nCode >= 0 and 
+                        hasattr(app_ref, 'kb2joy_suppression_active') and 
+                        app_ref.kb2joy_suppression_active and
+                        wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)):
+                        
+                        # Get virtual key code from KBDLLHOOKSTRUCT safely
+                        vk_code = ctypes.c_ulong.from_address(lParam).value
+                        
+                        # Debug logging if enabled
+                        if (hasattr(app_ref, 'kb2joy_debug_mode') and 
+                            app_ref.kb2joy_debug_mode and
+                            hasattr(app_ref, 'kb2joy_suppressed_keys')):
+                            app_ref._add_log(f"🔍 Hook: VK={vk_code}, mapped_keys={list(app_ref.kb2joy_suppressed_keys)}")
+                        
+                        # Check if this specific key should be suppressed
+                        if (hasattr(app_ref, 'kb2joy_suppressed_keys') and 
+                            vk_code in app_ref.kb2joy_suppressed_keys):
+                            if hasattr(app_ref, '_add_log'):
+                                app_ref._add_log(f"🛡️ Hook suppressed mapped key VK: {vk_code}")
+                            return 1  # Suppress ONLY this specific key
+                        
+                        # Key is NOT in our suppressed set - allow it through
+                        if (hasattr(app_ref, 'kb2joy_debug_mode') and 
+                            app_ref.kb2joy_debug_mode and
+                            hasattr(app_ref, '_add_log')):
+                            app_ref._add_log(f"✅ Hook allowed unmapped key VK: {vk_code}")
+                
+                except Exception as e:
+                    # On any error, allow the key through and log error
+                    if hasattr(app_ref, '_add_log'):
+                        app_ref._add_log(f"Hook error: {e}")
+                
+                # Call next hook in chain for all non-suppressed keys
+                return ctypes.windll.user32.CallNextHookExW(None, nCode, wParam, lParam)
+            
+            # Convert to correct function pointer type
+            HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+            self.kb2joy_hook_proc = HOOKPROC(low_level_keyboard_proc)
+            
+            # Install the hook
+            self.kb2joy_hook = ctypes.windll.user32.SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                self.kb2joy_hook_proc,
+                ctypes.windll.kernel32.GetModuleHandleW(None),
+                0
+            )
+            
+            if self.kb2joy_hook:
+                self.kb2joy_hook_installed = True
+                self._add_log("✅ Windows keyboard hook installed successfully")
+                self._add_log(f"🔧 Hook will suppress VK codes: {list(self.kb2joy_suppressed_keys)}")
+                return True
+            else:
+                self._add_log("❌ Failed to install Windows keyboard hook")
+                return False
+                
+        except Exception as e:
+            self._add_log(f"❌ Error installing keyboard hook: {e}")
+            return False
+    
+    def _uninstall_keyboard_hook(self):
+        """Uninstall Windows keyboard hook."""
+        if self.kb2joy_hook_installed and self.kb2joy_hook:
+            try:
+                ctypes.windll.user32.UnhookWindowsHookExW(self.kb2joy_hook)
+                self.kb2joy_hook = None
+                self.kb2joy_hook_installed = False
+                self._add_log("🔓 Windows keyboard hook uninstalled")
+            except Exception as e:
+                self._add_log(f"Error uninstalling keyboard hook: {e}")
+    
+    def _key_to_vk_code(self, key_str):
+        """Convert key string to Windows VK code."""
+        # Common key mappings
+        vk_map = {
+            'a': 0x41, 'b': 0x42, 'c': 0x43, 'd': 0x44, 'e': 0x45, 'f': 0x46,
+            'g': 0x47, 'h': 0x48, 'i': 0x49, 'j': 0x4A, 'k': 0x4B, 'l': 0x4C,
+            'm': 0x4D, 'n': 0x4E, 'o': 0x4F, 'p': 0x50, 'q': 0x51, 'r': 0x52,
+            's': 0x53, 't': 0x54, 'u': 0x55, 'v': 0x56, 'w': 0x57, 'x': 0x58,
+            'y': 0x59, 'z': 0x5A,
+            '0': 0x30, '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34,
+            '5': 0x35, '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
+            'space': 0x20, 'enter': 0x0D, 'tab': 0x09, 'shift': 0x10,
+            'ctrl': 0x11, 'alt': 0x12, 'escape': 0x1B, 'backspace': 0x08,
+            'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27,
+            'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
+            'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
+            'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+        }
+        
+        return vk_map.get(key_str.lower())
+    
+    def _update_suppressed_keys(self):
+        """Update the set of keys that should be suppressed by the Windows hook."""
+        old_keys = self.kb2joy_suppressed_keys.copy()
+        self.kb2joy_suppressed_keys.clear()
+        
+        self._add_log(f"🔄 Updating suppressed keys - mappings: {len(self.kb2joy_mappings)}, suppression_active: {self.kb2joy_suppression_active}")
+        
+        if self.kb2joy_suppression_active:
+            # Debug: Show all current mappings
+            for xbox_button, mapped_input in self.kb2joy_mappings.items():
+                self._add_log(f"📝 Mapping: {xbox_button} ← {mapped_input}")
+            
+            keyboard_mappings = 0
+            for xbox_button, mapped_input in self.kb2joy_mappings.items():
+                # Only suppress keyboard keys (not mouse)
+                if not mapped_input.startswith('mouse_'):
+                    keyboard_mappings += 1
+                    vk_code = self._key_to_vk_code(mapped_input)
+                    if vk_code:
+                        self.kb2joy_suppressed_keys.add(vk_code)
+                        self._add_log(f"🔐 Will suppress '{mapped_input}' (VK: {vk_code}) → {xbox_button}")
+                    else:
+                        self._add_log(f"⚠️ Could not get VK code for '{mapped_input}' - check key name format")
+                else:
+                    self._add_log(f"🖱️ Skipping mouse input: {mapped_input} → {xbox_button}")
+            
+            self._add_log(f"� Summary: {keyboard_mappings} keyboard mappings, {len(self.kb2joy_suppressed_keys)} VK codes to suppress")
+            self._add_log(f"📋 VK codes to suppress: {sorted(list(self.kb2joy_suppressed_keys))}")
+        else:
+            self._add_log("🔓 Suppression inactive - no keys will be suppressed")
+    
+    def _on_kb2joy_mouse_scroll(self, x, y, dx, dy):
+        """Handle mouse scroll events. Returns False to suppress input if converted."""
+        if not self.kb2joy_enabled or self.kb2joy_capture_mode:
+            return True  # Allow input to pass through
+        
+        try:
+            # Convert scroll to string
+            if dy > 0:
+                scroll_str = "scroll_up"
+            else:
+                scroll_str = "scroll_down"
+            
+            # Check if scroll is mapped
+            for xbox_button, mapped_input in self.kb2joy_mappings.items():
+                if mapped_input == scroll_str:
+                    controller_button = self.virtual_controller.get_button_from_string(xbox_button)
+                    if controller_button:
+                        self.virtual_controller.press_button(controller_button, duration=0.1)
+                        
+                        # For mouse scroll, we always allow the input to pass through to avoid losing scroll control
+                        # We only convert to controller input but don't block the original
+                        self._add_log(f"KB2JOY: {scroll_str} -> {xbox_button} [SCROLL CONVERTED - original input preserved]")
+                        return True  # Always allow scroll input to pass through for safety
+            
+            # Scroll not mapped, allow it to pass through
+            return True
+                        
+        except Exception as e:
+            self._add_log(f"Error processing mouse scroll: {e}")
+            return True  # Allow input on error
+    
+    def _key_to_string(self, key):
+        """Convert pynput key to string representation."""
+        try:
+            if hasattr(key, 'char') and key.char is not None:
+                return key.char.lower()
+            else:
+                # Special keys
+                key_name = str(key).replace('Key.', '')
+                return key_name.lower()
+        except:
+            return str(key)
+    
+    def _capture_input_for_button(self, xbox_button):
+        """Capture input for a specific Xbox button."""
+        if not PYNPUT_AVAILABLE:
+            self.show_centered_messagebox("Error", "pynput library is required", "error")
+            return
+        
+        # Set capture mode
+        self.kb2joy_capture_mode = True
+        self.current_capture_button = xbox_button
+        
+        # Update button text
+        if xbox_button in self.mapping_widgets:
+            self.mapping_widgets[xbox_button]['capture_btn'].configure(text="Press key...")
+            self.mapping_widgets[xbox_button]['label'].configure(text="Waiting for input...")
+        
+        # Show capture dialog
+        self._show_capture_dialog(xbox_button)
+    
+    def _show_capture_dialog(self, xbox_button):
+        """Show input capture dialog."""
+        # Create capture window
+        capture_window = tk.Toplevel(self.root)
+        capture_window.title(f"Capture Input for {xbox_button}")
+        capture_window.geometry("400x200")
+        capture_window.transient(self.root)
+        capture_window.grab_set()
+        
+        # Center dialog
+        self.center_dialog_on_main(capture_window)
+        
+        # Instructions
+        instruction_label = tk.Label(capture_window, 
+                                    text=f"Press any key or mouse button to map to {xbox_button}\\n\\nPress ESC to cancel",
+                                    font=("Arial", 12),
+                                    justify="center")
+        instruction_label.pack(expand=True, pady=20)
+        
+        # Status label
+        status_label = tk.Label(capture_window, text="Waiting for input...", 
+                              font=("Arial", 10), fg="gray")
+        status_label.pack(pady=10)
+        
+        captured_input = None
+        
+        def on_key_press(key):
+            nonlocal captured_input
+            try:
+                if key == keyboard.Key.esc:
+                    capture_window.destroy()
+                    return False
+                
+                captured_input = self._key_to_string(key)
+                status_label.configure(text=f"Captured: {captured_input}")
+                capture_window.after(500, lambda: capture_window.destroy())
+                return False  # Stop listener
+            except:
+                return True
+        
+        def on_mouse_click(x, y, button, pressed):
+            nonlocal captured_input
+            if pressed:
+                captured_input = f"mouse_{button.name.lower()}"
+                status_label.configure(text=f"Captured: {captured_input}")
+                capture_window.after(500, lambda: capture_window.destroy())
+                return False
+        
+        def on_mouse_scroll(x, y, dx, dy):
+            nonlocal captured_input
+            if dy > 0:
+                captured_input = "scroll_up"
+            else:
+                captured_input = "scroll_down"
+            status_label.configure(text=f"Captured: {captured_input}")
+            capture_window.after(500, lambda: capture_window.destroy())
+            return False
+        
+        # Create temporary listeners for capture
+        temp_kb_listener = keyboard.Listener(on_press=on_key_press)
+        temp_mouse_listener = mouse.Listener(on_click=on_mouse_click, on_scroll=on_mouse_scroll)
+        
+        temp_kb_listener.start()
+        temp_mouse_listener.start()
+        
+        def on_dialog_close():
+            temp_kb_listener.stop()
+            temp_mouse_listener.stop()
+            
+            self.kb2joy_capture_mode = False
+            
+            if captured_input:
+                # Save the mapping
+                self.kb2joy_mappings[xbox_button] = captured_input
+                self._update_mapping_display(xbox_button, captured_input)
+                self._add_log(f"Mapped {captured_input} to {xbox_button}")
+                
+                # Update Windows hook suppressed keys if KB2JOY is active
+                if self.kb2joy_enabled and self.kb2joy_suppression_active:
+                    self._update_suppressed_keys()
+            
+            # Reset button text
+            if xbox_button in self.mapping_widgets:
+                self.mapping_widgets[xbox_button]['capture_btn'].configure(text="Capture")
+                if not captured_input:
+                    self.mapping_widgets[xbox_button]['label'].configure(text="Not mapped")
+        
+        capture_window.protocol("WM_DELETE_WINDOW", on_dialog_close)
+        capture_window.wait_window()
+        on_dialog_close()
+    
+    def _clear_mapping(self, xbox_button):
+        """Clear mapping for a specific Xbox button."""
+        if xbox_button in self.kb2joy_mappings:
+            del self.kb2joy_mappings[xbox_button]
+            self._update_mapping_display(xbox_button, "Not mapped")
+            self._add_log(f"Cleared mapping for {xbox_button}")
+            
+            # Update Windows hook suppressed keys if KB2JOY is active
+            if self.kb2joy_enabled and self.kb2joy_suppression_active:
+                self._update_suppressed_keys()
+    
+    def _toggle_kb2joy_debug(self):
+        """Toggle KB2JOY debug mode for troubleshooting."""
+        self.kb2joy_debug_mode = not self.kb2joy_debug_mode
+        if self.kb2joy_debug_mode:
+            self._add_log("🐛 KB2JOY debug mode ENABLED - will log all key presses")
+            self._add_log(f"📋 Currently suppressing VK codes: {list(self.kb2joy_suppressed_keys)}")
+        else:
+            self._add_log("🐛 KB2JOY debug mode DISABLED")
+    
+    def _clear_all_mappings(self):
+        """Clear all KB2JOY mappings."""
+        if self.show_centered_messagebox("Confirm", "Clear all input mappings?", "question"):
+            self.kb2joy_mappings.clear()
+            
+            # Update all displays
+            for button in self.mapping_widgets:
+                self._update_mapping_display(button, "Not mapped")
+            
+            # Update Windows hook suppressed keys if KB2JOY is active
+            if self.kb2joy_enabled and self.kb2joy_suppression_active:
+                self._update_suppressed_keys()
+            
+            self._add_log("Cleared all KB2JOY mappings")
+    
+    def _update_mapping_display(self, xbox_button, input_str):
+        """Update the mapping display for a button."""
+        if xbox_button in self.mapping_widgets:
+            self.mapping_widgets[xbox_button]['label'].configure(text=input_str)
+    
+    def _save_kb2joy_config(self):
+        """Save KB2JOY mappings to configuration."""
+        try:
+            config_file = "kb2joy_config.json"
+            
+            config_data = {
+                'mappings': self.kb2joy_mappings,
+                'enabled': self.kb2joy_enabled,
+                'suppress_input': self.kb2joy_suppress_input_var.get() if hasattr(self, 'kb2joy_suppress_input_var') else True
+            }
+            
+            with open(config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            
+            self._add_log(f"KB2JOY configuration saved to {config_file}")
+            self.show_centered_messagebox("Success", "KB2JOY configuration saved successfully", "info")
+            
+        except Exception as e:
+            self._add_log(f"Error saving KB2JOY config: {e}")
+            self.show_centered_messagebox("Error", f"Failed to save configuration: {e}", "error")
+    
+    def _load_kb2joy_config(self):
+        """Load KB2JOY mappings from configuration."""
+        try:
+            config_file = "kb2joy_config.json"
+            
+            if os.path.exists(config_file):
+                with open(config_file, 'r') as f:
+                    config_data = json.load(f)
+                
+                self.kb2joy_mappings = config_data.get('mappings', {})
+                
+                # Load suppress input setting
+                suppress_input = config_data.get('suppress_input', True)
+                if hasattr(self, 'kb2joy_suppress_input_var'):
+                    self.kb2joy_suppress_input_var.set(suppress_input)
+                
+                # Update displays
+                for button, input_str in self.kb2joy_mappings.items():
+                    self._update_mapping_display(button, input_str)
+                
+                self._add_log(f"Loaded {len(self.kb2joy_mappings)} KB2JOY mappings")
+                self.show_centered_messagebox("Success", "KB2JOY configuration loaded successfully", "info")
+            else:
+                self.show_centered_messagebox("Info", "No saved KB2JOY configuration found", "info")
+                
+        except Exception as e:
+            self._add_log(f"Error loading KB2JOY config: {e}")
+            self.show_centered_messagebox("Error", f"Failed to load configuration: {e}", "error")
+    
+    def _export_kb2joy_config(self):
+        """Export KB2JOY configuration to chosen file."""
+        try:
+            filename = self.show_centered_filedialog("save",
+                title="Export KB2JOY Configuration",
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            )
+            
+            if filename:
+                config_data = {
+                    'mappings': self.kb2joy_mappings,
+                    'enabled': self.kb2joy_enabled,
+                    'suppress_input': self.kb2joy_suppress_input_var.get() if hasattr(self, 'kb2joy_suppress_input_var') else True,
+                    'version': '1.0'
+                }
+                
+                with open(filename, 'w') as f:
+                    json.dump(config_data, f, indent=2)
+                
+                self._add_log(f"KB2JOY configuration exported to {filename}")
+                self.show_centered_messagebox("Success", "Configuration exported successfully", "info")
+                
+        except Exception as e:
+            self._add_log(f"Error exporting KB2JOY config: {e}")
+            self.show_centered_messagebox("Error", f"Failed to export configuration: {e}", "error")
+    
+    def _import_kb2joy_config(self):
+        """Import KB2JOY configuration from chosen file."""
+        try:
+            filename = self.show_centered_filedialog("open",
+                title="Import KB2JOY Configuration",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            )
+            
+            if filename:
+                with open(filename, 'r') as f:
+                    config_data = json.load(f)
+                
+                self.kb2joy_mappings = config_data.get('mappings', {})
+                
+                # Load suppress input setting
+                suppress_input = config_data.get('suppress_input', True)
+                if hasattr(self, 'kb2joy_suppress_input_var'):
+                    self.kb2joy_suppress_input_var.set(suppress_input)
+                
+                # Update displays
+                for button in self.mapping_widgets:
+                    input_str = self.kb2joy_mappings.get(button, "Not mapped")
+                    self._update_mapping_display(button, input_str)
+                
+                self._add_log(f"Imported {len(self.kb2joy_mappings)} KB2JOY mappings from {filename}")
+                self.show_centered_messagebox("Success", "Configuration imported successfully", "info")
+                
+        except Exception as e:
+            self._add_log(f"Error importing KB2JOY config: {e}")
+            self.show_centered_messagebox("Error", f"Failed to import configuration: {e}", "error")
+    
+    def _load_kb2joy_mappings(self):
+        """Load KB2JOY mappings on startup."""
+        try:
+            config_file = "kb2joy_config.json"
+            
+            if os.path.exists(config_file):
+                with open(config_file, 'r') as f:
+                    config_data = json.load(f)
+                
+                self.kb2joy_mappings = config_data.get('mappings', {})
+                
+                # Load suppress input setting
+                suppress_input = config_data.get('suppress_input', True)
+                if hasattr(self, 'kb2joy_suppress_input_var'):
+                    self.kb2joy_suppress_input_var.set(suppress_input)
+                
+                # Update displays
+                for button, input_str in self.kb2joy_mappings.items():
+                    self._update_mapping_display(button, input_str)
+                
+                self._add_log(f"Loaded {len(self.kb2joy_mappings)} saved KB2JOY mappings")
+                
+        except Exception as e:
+            self._add_log(f"Note: No saved KB2JOY mappings found ({e})")
     
     def run(self):
         """Start the GUI application."""

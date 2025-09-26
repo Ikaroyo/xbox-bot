@@ -1,0 +1,10 @@
+{
+  "mappings": {
+    "DPAD_UP": "s",
+    "DPAD_DOWN": "w",
+    "DPAD_LEFT": "d",
+    "DPAD_RIGHT": "a"
+  },
+  "enabled": false,
+  "suppress_input": true
+}
