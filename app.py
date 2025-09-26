@@ -98,7 +98,8 @@ class StumbleBotApp:
         self.kb2joy_hook = None
         self.kb2joy_hook_installed = False
         self.kb2joy_suppressed_keys = set()  # VK codes of keys to suppress
-        self.kb2joy_debug_mode = True  # Debug hook behavior (enabled by default for testing)
+        self.kb2joy_debug_mode = False  # Debug hook behavior
+        self.kb2joy_advanced_suppress_var = None  # Will be initialized in GUI setup
         
         # Load default configuration
         self.config_manager.load_config()
@@ -1255,18 +1256,35 @@ class StumbleBotApp:
         suppress_frame = ctk.CTkFrame(control_frame)
         suppress_frame.pack(fill="x", padx=10, pady=5)
         
-        self.kb2joy_suppress_input_var = ctk.BooleanVar(value=True)
+        self.kb2joy_suppress_input_var = ctk.BooleanVar(value=False)
         suppress_checkbox = ctk.CTkCheckBox(suppress_frame,
-                                          text="Block original keyboard input (recommended)", 
+                                          text="Enable KB2JOY conversion (converts mapped keys to controller)", 
                                           variable=self.kb2joy_suppress_input_var,
                                           font=ctk.CTkFont(size=11))
         suppress_checkbox.pack(side="left", padx=10, pady=5)
         
         suppress_info = ctk.CTkLabel(suppress_frame,
-                                   text="Converts keyboard keys to controller input. For complete suppression, run as Administrator.",
+                                   text="Note: Original keyboard input will pass through. Perfect suppression not reliable with current method.",
                                    font=ctk.CTkFont(size=9),
                                    text_color="gray")
         suppress_info.pack(side="left", padx=10, pady=5)
+        
+        # Advanced suppression option
+        advanced_frame = ctk.CTkFrame(control_frame)
+        advanced_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.kb2joy_advanced_suppress_var = ctk.BooleanVar(value=False)
+        advanced_checkbox = ctk.CTkCheckBox(advanced_frame,
+                                          text="⚠️ Experimental: Attempt input suppression (may cause issues)", 
+                                          variable=self.kb2joy_advanced_suppress_var,
+                                          font=ctk.CTkFont(size=10))
+        advanced_checkbox.pack(side="left", padx=10, pady=5)
+        
+        advanced_info = ctk.CTkLabel(advanced_frame,
+                                   text="Warning: May stop working after first key press. Use at your own risk.",
+                                   font=ctk.CTkFont(size=8),
+                                   text_color="orange")
+        advanced_info.pack(side="left", padx=10, pady=5)
         
         # Mapping section
         mapping_frame = ctk.CTkFrame(scroll_frame)
@@ -3464,25 +3482,11 @@ Notes:
                 self.kb2joy_status_label.configure(text="Status: Active - Capturing inputs")
                 self._add_log("KB2JOY started - capturing keyboard and mouse inputs")
                 
-                # Install Windows keyboard hook if suppression is enabled
+                # Use conversion-only mode for reliability
                 if suppress_enabled and self.kb2joy_suppression_active:
-                    # Clear any old suppressed keys first
-                    self.kb2joy_suppressed_keys.clear()
-                    self._add_log("🧹 Cleared old suppressed keys")
-                    
-                    # Update suppressed keys based on current mappings
-                    self._update_suppressed_keys()
-                    
-                    # Install hook only if we have keys to suppress
-                    if self.kb2joy_suppressed_keys:
-                        hook_success = self._install_keyboard_hook()
-                        if hook_success:
-                            self._add_log("🔒 Advanced suppression system active")
-                        else:
-                            self._add_log("⚠️ Using basic suppression - may be less reliable")
-                    else:
-                        self._add_log("ℹ️ No keyboard mappings found - hook not needed")
-                    
+                    self._add_log("🔄 KB2JOY running in CONVERSION mode")
+                    self._add_log("💡 Original keyboard input will pass through - suppression disabled for reliability")
+                    self._add_log("✅ Mapped keys will be converted to controller input")
                     self._start_suppression_monitoring()
                 elif suppress_enabled:
                     self.root.after(2000, self._test_suppression_working)
@@ -3521,8 +3525,12 @@ Notes:
                 self.kb2joy_mouse_listener.stop()
                 self.kb2joy_mouse_listener = None
             
-            # Uninstall Windows keyboard hook
-            self._uninstall_keyboard_hook()
+            # Uninstall Windows keyboard hook if it was installed
+            if self.kb2joy_hook_installed:
+                self._uninstall_keyboard_hook()
+            
+            # Clear suppressed keys
+            self.kb2joy_suppressed_keys.clear()
             
             # Cancel monitoring timer
             if hasattr(self, 'kb2joy_monitor_timer') and self.kb2joy_monitor_timer:
@@ -3581,6 +3589,10 @@ Notes:
             # Convert key to string representation
             key_str = self._key_to_string(key)
             
+            # Debug logging if enabled
+            if self.kb2joy_debug_mode:
+                self._add_log(f"🔍 Pynput: {key_str}")
+            
             # Check if this key is mapped
             for xbox_button, mapped_input in self.kb2joy_mappings.items():
                 if mapped_input == key_str:
@@ -3589,20 +3601,27 @@ Notes:
                     if button:
                         self.virtual_controller.press_button(button, duration=0.1)
                         
-                        # Log the conversion - Windows hook handles actual suppression
-                        if self.kb2joy_suppression_active and self.kb2joy_hook_installed:
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [HOOK SUPPRESSED]")
-                        elif self.kb2joy_suppression_active:
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [SUPPRESSION ATTEMPTED]")
+                        # Check if user wants experimental suppression
+                        if (self.kb2joy_suppression_active and 
+                            hasattr(self, 'kb2joy_advanced_suppress_var') and 
+                            self.kb2joy_advanced_suppress_var and
+                            self.kb2joy_advanced_suppress_var.get()):
+                            
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [EXPERIMENTAL SUPPRESSION]")
+                            # WARNING: This may break the listener!
+                            return False
                         else:
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED]")
-                        
-                        # Always return True to keep pynput listener alive
-                        # The Windows hook handles the actual suppression
-                        return True
+                            # Safe mode - always allow original input through
+                            if self.kb2joy_suppression_active:
+                                self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED + PASS-THROUGH]")
+                            else:
+                                self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED]")
+                            return True
                     break
             
-            # Key not mapped, allow it through
+            # Key not mapped - always allow it through
+            if self.kb2joy_debug_mode:
+                self._add_log(f"✅ Pynput: {key_str} [UNMAPPED - ALLOWED]")
             return True
             
         except Exception as e:
@@ -4166,7 +4185,14 @@ Notes:
         self.kb2joy_debug_mode = not self.kb2joy_debug_mode
         if self.kb2joy_debug_mode:
             self._add_log("🐛 KB2JOY debug mode ENABLED - will log all key presses")
+            self._add_log(f"📋 Current mappings: {dict(self.kb2joy_mappings)}")
             self._add_log(f"📋 Currently suppressing VK codes: {list(self.kb2joy_suppressed_keys)}")
+            # Test key conversion
+            test_keys = ['w', 'a', 's', 'd', 'space', 'enter']
+            self._add_log("🧪 Key conversion test:")
+            for test_key in test_keys:
+                vk = self._key_to_vk_code(test_key)
+                self._add_log(f"  '{test_key}' -> VK {vk}")
         else:
             self._add_log("🐛 KB2JOY debug mode DISABLED")
     
