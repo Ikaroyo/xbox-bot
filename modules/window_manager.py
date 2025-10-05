@@ -6,17 +6,42 @@ Supports handling duplicate windows by showing process information.
 """
 
 import pygetwindow as gw
-import win32gui
-import win32con
-import win32process
-import win32api
-import win32ui
-from win32con import *
 import psutil
 import ctypes
 from ctypes import wintypes, Structure, c_long, c_ulong, c_short, c_ushort, c_byte, POINTER, byref, sizeof
 import time
 from typing import List, Dict, Optional, Tuple
+
+# Try to import pywin32 components with fallbacks
+try:
+    import win32gui
+    import win32con
+    import win32process
+    import win32api
+    import win32ui
+    from win32con import *
+    PYWIN32_AVAILABLE = True
+    print("✓ pywin32 loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Warning: pywin32 not available ({e})")
+    print("⚠️ Some advanced window features will be disabled")
+    PYWIN32_AVAILABLE = False
+    
+    # Create dummy constants and functions
+    class DummyWin32:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+    
+    win32gui = DummyWin32()
+    win32con = DummyWin32()
+    win32process = DummyWin32()
+    win32api = DummyWin32()
+    win32ui = DummyWin32()
+    
+    # Dummy constants
+    HWND_TOP = 0
+    SW_RESTORE = 9
+    SW_SHOW = 5
 
 # Windows API constants for input injection
 WM_KEYDOWN = 0x0100

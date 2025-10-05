@@ -44,6 +44,9 @@ class BotThread(threading.Thread):
         self.paused = False
         self.rules = []
         
+        # Focus checking
+        self.focus_check_callback = None  # Callback to check if bot should operate
+        
         # Configuration
         self.loop_delay = 0.1  # Delay between detection cycles (seconds)
         self.action_cooldown = 1.0  # Cooldown after successful action (seconds)
@@ -260,12 +263,13 @@ class BotThread(threading.Thread):
                 
                 if match:
                     self.log(f"Detected: {rule_name} (confidence: {match['confidence']:.3f})")
+                    self.log(f"DEBUG: Template match - top_left: {match.get('top_left', 'N/A')}, center: {match['center']}, bottom_right: {match.get('bottom_right', 'N/A')}")
                     
                     # Handle cycle tracking if enabled
                     self._handle_cycle_tracking(rule)
                     
-                    # Execute the action
-                    if self._execute_action(action, rule_name):
+                    # Execute the action with detected coordinates
+                    if self._execute_action(action, rule_name, match['center']):
                         # Action executed successfully, apply cooldown
                         self._last_action_time = time.time()
                         return True
@@ -297,48 +301,118 @@ class BotThread(threading.Thread):
             self.log(f"Error processing rules: {e}")
             return False
     
-    def _execute_action(self, action: str, rule_name: str) -> bool:
+    def _execute_action(self, action: str, rule_name: str, coordinates: tuple = None) -> bool:
         """
-        Execute a controller action (single button or sequence).
+        Execute an action (controller button, mouse action, keyboard key, or sequence).
         
         Args:
-            action: Action string (button name or sequence)
+            action: Action string (button name, mouse action, key, or sequence)
             rule_name: Name of the rule for logging
+            coordinates: (x, y) coordinates for mouse actions (optional)
             
         Returns:
             True if action executed successfully, False otherwise
         """
         try:
-            # Check if this is a sequence (contains comma and colon)
-            if ',' in action and ':' in action:
-                # Execute sequence
-                success = self.virtual_controller.execute_sequence(action)
-                if success:
-                    self.log(f"Sequence executed: {action} (rule: {rule_name})")
-                else:
-                    self.log(f"Failed to execute sequence: {action}")
-                return success
+            # Determine the input mode based on action type
+            input_mode = InputMode.CONTROLLER  # Default
+            
+            if action.startswith(('click', 'doubleclick', 'move', 'scroll')):
+                input_mode = InputMode.MOUSE
+                # For mouse actions, append coordinates if provided
+                if coordinates and action.startswith(('click', 'doubleclick')):
+                    x, y = coordinates
+                    
+                    # Convert screenshot coordinates to window coordinates
+                    window_x, window_y = self._convert_to_window_coordinates(x, y)
+                    
+                    if ':' not in action:
+                        # Simple click -> click:left:x:y
+                        action = f"{action}:left:{window_x}:{window_y}"
+                    elif action.count(':') == 1:
+                        # click:right -> click:right:x:y  
+                        action = f"{action}:{window_x}:{window_y}"
+                    # If action already has coordinates, don't modify
+                    
+            elif action in ['ctrl', 'shift', 'alt', 'tab', 'enter', 'space', 'esc']:
+                # Common keyboard keys (but not single letters that could be controller buttons)
+                input_mode = InputMode.KEYBOARD
             else:
-                # Single button press
-                button = self.virtual_controller.get_button_from_string(action)
-                
-                if button is None:
-                    self.log(f"Unknown action '{action}' for rule: {rule_name}")
-                    return False
-                
-                # Execute the button press
-                success = self.virtual_controller.press_button(button)
-                
-                if success:
-                    self.log(f"Action executed: {action} (rule: {rule_name})")
+                # For other actions, check if it's a valid Xbox controller button
+                xbox_button = self.virtual_controller.get_button_from_string(action)
+                if xbox_button:
+                    input_mode = InputMode.CONTROLLER
+                    self.log(f"DEBUG: '{action}' recognized as CONTROLLER button: {xbox_button}")
+                elif len(action) == 1 and action.lower() in 'abcdefghijklmnopqrstuvwxyz0123456789':
+                    # Single character that's not an Xbox button - treat as keyboard
+                    input_mode = InputMode.KEYBOARD  
+                    self.log(f"DEBUG: '{action}' treated as KEYBOARD key")
                 else:
-                    self.log(f"Failed to execute action: {action}")
-                
-                return success
+                    # Default to controller for sequences or unknown actions
+                    input_mode = InputMode.CONTROLLER
+                    self.log(f"DEBUG: '{action}' defaulting to CONTROLLER mode")
+            
+            # Get window handle for unfocused clicking
+            hwnd = None
+            if hasattr(self, 'window_manager') and self.window_manager and input_mode == InputMode.MOUSE:
+                if hasattr(self, '_current_window') and self._current_window:
+                    hwnd = self._current_window.get('hwnd')
+                    self.log(f"DEBUG: Using window handle {hwnd} for unfocused clicking")
+            
+            # Use the virtual controller's execute_action method which handles all modes
+            success = self.virtual_controller.execute_action(action, input_mode, hwnd)
+            
+            if success:
+                mode_str = input_mode.value.upper()
+                if coordinates and input_mode == InputMode.MOUSE:
+                    coord_str = f" - moved cursor to target area around ({coordinates[0]}, {coordinates[1]}) with human-like variation and clicked"
+                elif coordinates:
+                    coord_str = f" at ({coordinates[0]}, {coordinates[1]})"
+                else:
+                    coord_str = ""
+                self.log(f"{mode_str} action executed: {action}{coord_str} (rule: {rule_name})")
+            else:
+                self.log(f"Failed to execute action: {action} (rule: {rule_name})")
+            
+            return success
             
         except Exception as e:
             self.log(f"Error executing action '{action}': {e}")
             return False
+    
+    def _convert_to_window_coordinates(self, x: int, y: int) -> tuple:
+        """
+        Convert screenshot coordinates to window coordinates.
+        
+        Args:
+            x, y: Coordinates from screenshot (relative to window client area)
+            
+        Returns:
+            Tuple of (window_x, window_y) - absolute screen coordinates
+        """
+        try:
+            if hasattr(self, 'window_manager') and self.window_manager and hasattr(self, '_current_window') and self._current_window:
+                # Get client area coordinates (same area used for screenshot capture)
+                client_area = self.window_manager.capture_window_area(self._current_window)
+                if client_area:
+                    client_x, client_y, client_width, client_height = client_area
+                    # Add client area offset to screenshot coordinates
+                    absolute_x = client_x + x
+                    absolute_y = client_y + y
+                    self.log(f"DEBUG: Screenshot coords ({x}, {y}) + Client area offset ({client_x}, {client_y}) -> Absolute coords ({absolute_x}, {absolute_y})")
+                    return absolute_x, absolute_y
+                else:
+                    self.log(f"DEBUG: Failed to get client area for current window")
+            else:
+                self.log(f"DEBUG: Window manager or current window not available")
+            
+            # Fallback: return original coordinates
+            self.log(f"DEBUG: No client area available - using original coords ({x}, {y})")
+            return x, y
+            
+        except Exception as e:
+            self.log(f"Error converting coordinates: {e}")
+            return x, y
     
     def _is_cooldown_active(self) -> bool:
         """Check if action cooldown is still active."""
@@ -380,6 +454,13 @@ class BotThread(threading.Thread):
                 if self.paused:
                     time.sleep(0.1)
                     continue
+                
+                # Check if we should operate based on process focus
+                if self.focus_check_callback:
+                    if not self.focus_check_callback():
+                        # Target process not focused - skip this cycle
+                        time.sleep(0.5)  # Longer sleep when not focused
+                        continue
                 
                 # Check if cooldown is active
                 if self._is_cooldown_active():

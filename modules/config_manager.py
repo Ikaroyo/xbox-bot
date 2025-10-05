@@ -114,12 +114,18 @@ class ConfigManager:
         """
         self.config_dir = config_dir
         self.default_config_file = "default_config.json"
+        self.current_config_filename = None  # Track current config filename
         
         # Create config directory if it doesn't exist
         if not os.path.exists(config_dir):
             os.makedirs(config_dir)
         
         self.current_config = AppConfig()
+        
+        # Create base templates directory
+        self.base_templates_dir = "templates"
+        if not os.path.exists(self.base_templates_dir):
+            os.makedirs(self.base_templates_dir)
     
     def save_config(self, filename: Optional[str] = None) -> bool:
         """
@@ -139,6 +145,9 @@ class ConfigManager:
             
             # Update last saved timestamp
             self.current_config.last_saved = datetime.now().isoformat()
+            
+            # Track current config filename
+            self.current_config_filename = filename
             
             # Convert to dictionary
             config_dict = self._config_to_dict(self.current_config)
@@ -180,12 +189,92 @@ class ConfigManager:
             
             # Convert to config object
             self.current_config = self._dict_to_config(config_dict)
+            self.current_config_filename = filename  # Track current config
+            
+            # Migrate templates to config-specific directory if needed
+            self.migrate_templates_to_config(filename)
             
             print(f"Configuration loaded from: {config_path}")
             return True
             
         except Exception as e:
             print(f"Error loading configuration: {e}")
+            return False
+    
+    def get_templates_dir(self, config_filename: Optional[str] = None) -> str:
+        """
+        Get the templates directory for a specific config.
+        
+        Args:
+            config_filename: Config filename (without path). If None, uses current config.
+            
+        Returns:
+            Path to the config-specific templates directory
+        """
+        if config_filename is None:
+            config_filename = self.current_config_filename or self.default_config_file
+        
+        # Remove .json extension and path to get config name
+        config_name = os.path.splitext(os.path.basename(config_filename))[0]
+        
+        # Create config-specific templates directory
+        templates_dir = os.path.join(self.base_templates_dir, config_name)
+        if not os.path.exists(templates_dir):
+            os.makedirs(templates_dir)
+        
+        return templates_dir
+    
+    def migrate_templates_to_config(self, config_filename: str) -> bool:
+        """
+        Migrate templates from the base templates directory to config-specific directory.
+        
+        Args:
+            config_filename: Config filename to migrate templates for
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            config_templates_dir = self.get_templates_dir(config_filename)
+            
+            # Get templates used by this config
+            config_path = os.path.join(self.config_dir, config_filename)
+            if not os.path.exists(config_path):
+                return False
+            
+            # Load config to get template names
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+            
+            detection_rules = config_data.get('detection_rules', [])
+            templates_to_migrate = set()
+            
+            for rule in detection_rules:
+                template_name = rule.get('template', '')
+                if template_name:
+                    templates_to_migrate.add(template_name)
+            
+            # Copy templates from base directory to config directory
+            imported_count = 0
+            for template_name in templates_to_migrate:
+                # Ensure .png extension
+                if not template_name.endswith('.png'):
+                    template_name += '.png'
+                
+                source_path = os.path.join(self.base_templates_dir, template_name)
+                dest_path = os.path.join(config_templates_dir, template_name)
+                
+                if os.path.exists(source_path) and not os.path.exists(dest_path):
+                    import shutil
+                    shutil.copy2(source_path, dest_path)
+                    imported_count += 1
+            
+            if imported_count > 0:
+                print(f"Migrated {imported_count} templates for config '{config_filename}'")
+            return True
+            
+        except Exception as e:
+            print(f"Error migrating templates for config '{config_filename}': {e}")
             return False
     
     def reset_to_defaults(self):
@@ -639,7 +728,7 @@ class ConfigManager:
     
     def get_template_statistics(self) -> Dict[str, Any]:
         """Get comprehensive template statistics for performance monitoring."""
-        templates_dir = "templates"
+        templates_dir = self.get_templates_dir()
         stats = {
             "total_templates": 0,
             "total_size_bytes": 0,

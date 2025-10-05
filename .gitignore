@@ -14,3 +14,5 @@ logs/
 .vscode/
 # Ignore debug folders
 debug*/
+# Ignore virtual environment folders
+env*/

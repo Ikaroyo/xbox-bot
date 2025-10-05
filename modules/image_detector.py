@@ -29,6 +29,20 @@ class ImageDetector:
         if not os.path.exists(templates_dir):
             os.makedirs(templates_dir)
     
+    def update_templates_dir(self, templates_dir: str):
+        """
+        Update the templates directory and clear cache.
+        
+        Args:
+            templates_dir: New templates directory path
+        """
+        self.templates_dir = templates_dir
+        self.templates_cache = {}  # Clear cache when changing directory
+        
+        # Create templates directory if it doesn't exist
+        if not os.path.exists(templates_dir):
+            os.makedirs(templates_dir)
+    
     def capture_screenshot(self, bbox: Optional[Tuple[int, int, int, int]] = None) -> Optional[np.ndarray]:
         """
         Capture a screenshot of the screen or specified area.

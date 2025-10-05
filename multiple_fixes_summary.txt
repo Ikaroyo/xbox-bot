@@ -1,0 +1,52 @@
+## 🔧 **Multiple Fixes Applied - Testing Required**
+
+### ✅ **Three Critical Issues Fixed:**
+
+#### 1. **Window-Relative Coordinates** 
+- **Problem**: Bot was using absolute screen coordinates instead of window-relative
+- **Solution**: Added `_convert_to_window_coordinates()` method 
+- **Effect**: Clicks now calculate proper position relative to game window
+
+#### 2. **Unfocused Window Clicking**
+- **Problem**: Clicks only worked when window was focused
+- **Solution**: Added PostMessage-based clicking with window handle support
+- **Effect**: Bot can now click on unfocused/background windows
+
+#### 3. **Config Loading Override** 
+- **Problem**: Loading config changed Mouse actions to Controller actions
+- **Solution**: Bot now auto-detects action type regardless of stored input_mode
+- **Effect**: `click` actions stay as Mouse actions even after config load
+
+### 🧪 **Expected Results After Testing:**
+
+#### **Better Coordinate Accuracy:**
+```
+OLD: MOUSE action executed: click:left:370:541 at (370, 541)
+NEW: MOUSE action executed: click:left:1045:582 at (1045, 582)  
+     ↑ Should show window-adjusted coordinates
+```
+
+#### **Unfocused Window Support:**
+```
+PostMessage click sent to window 12345 at client coords (370, 541)
+↑ Should work even when game window not focused
+```
+
+#### **Preserved Action Types:**
+```
+✅ click actions remain as MOUSE actions after config loading
+❌ No more automatic conversion to CONTROLLER actions
+```
+
+### 🎯 **Testing Instructions:**
+
+1. **Test coordinate conversion**: Check if click coordinates change when window is moved
+2. **Test unfocused clicking**: Minimize game window, see if bot still clicks correctly  
+3. **Test config loading**: Load/reload config, verify `click` actions stay as Mouse actions
+
+### ⚠️ **Potential Issues to Watch:**
+- PostMessage clicking might have different timing than mouse_event
+- Window handle detection needs to work properly
+- Coordinate conversion needs window position info
+
+**All three major issues addressed - ready for testing!** 🚀

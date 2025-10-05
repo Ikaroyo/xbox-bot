@@ -34,14 +34,28 @@ try:
 except ImportError:
     WINDOWS_HOOK_AVAILABLE = False
 
-# Import Windows API for better key suppression
+# Import Windows API for better key suppression and process monitoring
 try:
     import win32api
     import win32con
     import win32gui
+    import win32process
     WINAPI_AVAILABLE = True
-except ImportError:
+    print("✓ pywin32 Windows API loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Warning: pywin32 Windows API not available ({e})")
+    print("⚠️ Process focus and advanced features will be limited")
     WINAPI_AVAILABLE = False
+    
+    # Create dummy objects to prevent import errors
+    class DummyWin32API:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: 0
+    
+    win32api = DummyWin32API()
+    win32con = DummyWin32API()
+    win32gui = DummyWin32API()
+    win32process = DummyWin32API()
 
 from modules.window_manager import WindowManager
 from modules.image_detector import ImageDetector, TemplateManager
@@ -76,10 +90,24 @@ class StumbleBotApp:
         self.current_rules = []
         self.selected_rule_index = None
         
+        # Track last loaded configuration for save operations
+        self.last_loaded_config = None
+        
+        # Update image detector with config-specific templates directory
+        self._update_templates_directory()
+        
         # Geometry auto-save variables
         self.geometry_save_timer = None
         self.last_geometry = None
         self.geometry_save_delay = 1000  # 1 second delay before saving
+        
+        # Process focus checking variables
+        self.process_focus_enabled = False
+        self.target_process_name = ""  # Process name to monitor (e.g., "xbox.exe")
+        self.focus_check_interval = 500  # Check every 500ms
+        self.focus_check_timer = None
+        self.last_focused_state = None
+        self.is_target_process_focused = True  # Default to True so bot works normally
         
         # KB2JOY (Keyboard/Mouse to Joystick) variables
         self.kb2joy_enabled = False
@@ -93,6 +121,11 @@ class StumbleBotApp:
         self.kb2joy_suppression_active = False
         self.kb2joy_last_activity = 0
         self.kb2joy_monitor_timer = None
+        
+        # KB2JOY hotkey toggle
+        self.kb2joy_hotkey = "<ctrl>+<shift>+<f1>"  # Default hotkey in pynput format
+        self.kb2joy_hotkey_listener = None
+        self.kb2joy_hotkey_enabled = False
         
         # Windows keyboard hook for proper suppression
         self.kb2joy_hook = None
@@ -877,10 +910,21 @@ class StumbleBotApp:
         input_mode_frame.pack(fill="x", padx=5, pady=2)
         
         ctk.CTkLabel(input_mode_frame, text="Input Mode:", width=120).pack(side="left", padx=5)
-        self.input_mode_combobox = ctk.CTkComboBox(input_mode_frame, values=["controller", "keyboard", "mouse"])
-        self.input_mode_combobox.pack(side="left", fill="x", expand=True, padx=5)
-        self.input_mode_combobox.set("controller")
-        self.input_mode_combobox.configure(command=self._on_input_mode_change)
+        
+        # Radio button frame
+        radio_frame = ctk.CTkFrame(input_mode_frame)
+        radio_frame.pack(side="left", fill="x", expand=True, padx=5)
+        
+        # Input mode variable
+        self.input_mode_var = ctk.StringVar(value="controller")
+        
+        # Radio buttons
+        ctk.CTkRadioButton(radio_frame, text="Controller", variable=self.input_mode_var, 
+                          value="controller", command=self._on_input_mode_change).pack(side="left", padx=5)
+        ctk.CTkRadioButton(radio_frame, text="Keyboard", variable=self.input_mode_var, 
+                          value="keyboard", command=self._on_input_mode_change).pack(side="left", padx=5)
+        ctk.CTkRadioButton(radio_frame, text="Mouse", variable=self.input_mode_var, 
+                          value="mouse", command=self._on_input_mode_change).pack(side="left", padx=5)
         
         # Action combobox and sequence
         action_frame = ctk.CTkFrame(details_frame)
@@ -987,10 +1031,29 @@ class StumbleBotApp:
                                  font=ctk.CTkFont(size=16, weight="bold"))
         mgmt_label.pack(pady=(10, 5))
         
+        # Configuration selection
+        config_select_frame = ctk.CTkFrame(mgmt_frame)
+        config_select_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(config_select_frame, text="Configuration:").pack(anchor="w", padx=5)
+        
+        config_container = ctk.CTkFrame(config_select_frame)
+        config_container.pack(fill="x", padx=5, pady=5)
+        
+        # Get available config files
+        config_files = self._get_available_configs()
+        self.config_selection = ctk.CTkComboBox(config_container, values=config_files)
+        self.config_selection.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        if config_files and config_files[0] != "No configs found":
+            self.config_selection.set(config_files[0])
+        
+        ctk.CTkButton(config_container, text="Refresh", command=self._refresh_config_list, width=80).pack(side="right")
+        
         # Config buttons
         btn_frame = ctk.CTkFrame(mgmt_frame)
         btn_frame.pack(fill="x", padx=10, pady=10)
         
+        ctk.CTkButton(btn_frame, text="New Game", command=self._create_new_game_config, width=120).pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="Save Config", command=self._save_config, width=120).pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="Load Config", command=self._load_config, width=120).pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="Export Config", command=self._export_config, width=120).pack(side="left", padx=5)
@@ -1215,11 +1278,54 @@ class StumbleBotApp:
                                        text_color="gray")
         description_label.pack(pady=(0, 15))
         
+        # Process Focus section
+        focus_frame = ctk.CTkFrame(scroll_frame)
+        focus_frame.pack(fill="x", pady=(0, 10))
+        
+        focus_header = ctk.CTkLabel(focus_frame, text="Process Focus Control", 
+                                   font=ctk.CTkFont(size=14, weight="bold"))
+        focus_header.pack(pady=(10, 5))
+        
+        # Process focus enable checkbox
+        focus_enable_frame = ctk.CTkFrame(focus_frame)
+        focus_enable_frame.pack(fill="x", padx=10, pady=5)
+        
+        self.process_focus_var = ctk.BooleanVar(value=False)
+        focus_checkbox = ctk.CTkCheckBox(focus_enable_frame,
+                                        text="Only work when target process is focused",
+                                        variable=self.process_focus_var,
+                                        command=self._toggle_process_focus,
+                                        font=ctk.CTkFont(size=12))
+        focus_checkbox.pack(side="left", padx=10, pady=5)
+        
+        # Process name entry with validation
+        process_frame = ctk.CTkFrame(focus_frame)
+        process_frame.pack(fill="x", padx=10, pady=5)
+        
+        ctk.CTkLabel(process_frame, text="Process Name:", width=100).pack(side="left", padx=5)
+        self.process_name_entry = ctk.CTkEntry(process_frame, placeholder_text="xbox.exe")
+        self.process_name_entry.pack(side="left", fill="x", expand=True, padx=5)
+        
+        # Process validation button
+        self.validate_process_btn = ctk.CTkButton(process_frame, text="Check", 
+                                                 command=self._validate_process_name, width=60)
+        self.validate_process_btn.pack(side="left", padx=5)
+        
+        # Process suggestions button
+        self.suggest_process_btn = ctk.CTkButton(process_frame, text="Browse", 
+                                                command=self._browse_processes, width=70)
+        self.suggest_process_btn.pack(side="left", padx=5)
+        
+        # Process focus status
+        self.process_focus_status = ctk.CTkLabel(focus_enable_frame, text="Status: Disabled", 
+                                               font=ctk.CTkFont(size=11), text_color="gray")
+        self.process_focus_status.pack(side="right", padx=10, pady=5)
+        
         # Control section
         control_frame = ctk.CTkFrame(scroll_frame)
         control_frame.pack(fill="x", pady=(0, 10))
         
-        control_header = ctk.CTkLabel(control_frame, text="Control", 
+        control_header = ctk.CTkLabel(control_frame, text="KB2JOY Control", 
                                     font=ctk.CTkFont(size=14, weight="bold"))
         control_header.pack(pady=(10, 5))
         
@@ -1251,6 +1357,34 @@ class StumbleBotApp:
                                  command=self._clear_all_mappings,
                                  width=150)
         clear_btn.pack(side="right", padx=10, pady=10)
+        
+        # Hotkey configuration
+        hotkey_frame = ctk.CTkFrame(control_frame)
+        hotkey_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Hotkey enable checkbox
+        self.kb2joy_hotkey_var = ctk.BooleanVar(value=False)
+        hotkey_checkbox = ctk.CTkCheckBox(hotkey_frame,
+                                         text="Enable hotkey toggle",
+                                         variable=self.kb2joy_hotkey_var,
+                                         command=self._toggle_hotkey_listener)
+        hotkey_checkbox.pack(side="left", padx=10, pady=5)
+        
+        # Hotkey display and capture
+        ctk.CTkLabel(hotkey_frame, text="Hotkey:", width=60).pack(side="left", padx=5)
+        
+        self.hotkey_display = ctk.CTkLabel(hotkey_frame, text="Ctrl+Shift+F1", width=120, 
+                                          fg_color="gray20", corner_radius=5)
+        self.hotkey_display.pack(side="left", padx=5)
+        
+        self.capture_hotkey_btn = ctk.CTkButton(hotkey_frame, text="Set Hotkey", 
+                                               command=self._capture_hotkey, width=80)
+        self.capture_hotkey_btn.pack(side="left", padx=5)
+        
+        # Hotkey status
+        self.hotkey_status_label = ctk.CTkLabel(hotkey_frame, text="Hotkey: Disabled", 
+                                              font=ctk.CTkFont(size=11), text_color="gray")
+        self.hotkey_status_label.pack(side="right", padx=10, pady=5)
         
         # Input suppression control
         suppress_frame = ctk.CTkFrame(control_frame)
@@ -1433,6 +1567,13 @@ class StumbleBotApp:
             
             self.bot_thread.set_rules(rules_for_bot)
             
+            # Set focus checking callback for bot thread
+            if hasattr(self, 'process_focus_enabled') and self.process_focus_enabled:
+                self.bot_thread.focus_check_callback = self._should_bot_operate
+                self._add_log(f"🎯 Bot configured for process focus mode: {self.target_process_name}")
+            else:
+                self.bot_thread.focus_check_callback = None
+            
             # Start bot
             self.bot_thread.start_bot()
             
@@ -1501,7 +1642,7 @@ class StumbleBotApp:
                     debug_info += f"  {status} {rule.name}: {rule.template} ({template_exists}) -> {rule.action}\n"
             
             # Check templates directory
-            templates_dir = "templates"
+            templates_dir = self.config_manager.get_templates_dir()
             if os.path.exists(templates_dir):
                 template_files = [f for f in os.listdir(templates_dir) if f.endswith('.png')]
                 debug_info += f"\nTemplate Management:\n"
@@ -1746,7 +1887,7 @@ Click "Debug Info" for current status information.
             
             # Set input mode (default to controller for backwards compatibility)
             input_mode = getattr(rule, 'input_mode', 'controller')
-            self.input_mode_combobox.set(input_mode)
+            self.input_mode_var.set(input_mode)
             
             # Update action interface based on input mode
             self._on_input_mode_change()
@@ -1889,6 +2030,19 @@ Click "Debug Info" for current status information.
     
     # Configuration methods (placeholder implementations)
     
+    def _update_templates_directory(self):
+        """Update image detector to use config-specific templates directory."""
+        try:
+            templates_dir = self.config_manager.get_templates_dir()
+            self.image_detector.update_templates_dir(templates_dir)
+            
+            # Also update bot thread if it exists
+            if self.bot_thread and hasattr(self.bot_thread, 'image_detector'):
+                self.bot_thread.image_detector.update_templates_dir(templates_dir)
+                
+        except Exception as e:
+            self._add_log(f"Error updating templates directory: {e}")
+    
     def _load_config_to_gui(self):
         """Load current configuration to GUI elements."""
         try:
@@ -1896,18 +2050,25 @@ Click "Debug Info" for current status information.
             bot_config = self.config_manager.get_bot_config()
             joystick_config = self.config_manager.get_joystick_config()
             
-            # Window config
+            # Window config - clear and set values
+            self.window_title_entry.delete(0, "end")
             self.window_title_entry.insert(0, window_config.window_title)
+            self.window_width_entry.delete(0, "end")
             self.window_width_entry.insert(0, str(window_config.target_width))
+            self.window_height_entry.delete(0, "end")
             self.window_height_entry.insert(0, str(window_config.target_height))
             
-            # Bot config
+            # Bot config - clear and set values
+            self.loop_delay_entry.delete(0, "end")
             self.loop_delay_entry.insert(0, str(bot_config.loop_delay))
+            self.action_cooldown_entry.delete(0, "end")
             self.action_cooldown_entry.insert(0, str(bot_config.action_cooldown))
+            self.capture_width_entry.delete(0, "end")
             self.capture_width_entry.insert(0, str(bot_config.capture_area_width))
+            self.capture_height_entry.delete(0, "end")
             self.capture_height_entry.insert(0, str(bot_config.capture_area_height))
             
-            # Joystick config
+            # Joystick config - clear and set values
             self.joystick_delay_entry.delete(0, "end")
             self.joystick_delay_entry.insert(0, str(joystick_config.action_delay))
             self.auto_focus_var.set(joystick_config.auto_focus)
@@ -1962,7 +2123,8 @@ Click "Debug Info" for current status information.
             enabled_text = "✓ Enabled" if rule.enabled else "✗ Disabled"
             
             # Check if template exists for preview (cached check for performance)
-            template_path = os.path.join("templates", rule.template)
+            templates_dir = self.config_manager.get_templates_dir()
+            template_path = os.path.join(templates_dir, rule.template)
             if not template_path.endswith('.png'):
                 template_path += '.png'
             preview_text = "📷" if os.path.exists(template_path) else "❌"
@@ -2019,7 +2181,7 @@ Click "Debug Info" for current status information.
             self.confidence_slider.set(0.8)
             
             # Reset input mode to default
-            self.input_mode_combobox.set("controller")
+            self.input_mode_var.set("controller")
             self._on_input_mode_change()  # Update available actions
             
             # Reset action type to simple
@@ -2099,7 +2261,7 @@ Click "Debug Info" for current status information.
             name = self.rule_name_entry.get().strip()
             template = self.template_name_entry.get().strip()
             confidence = self.confidence_slider.get()
-            input_mode = self.input_mode_combobox.get()
+            input_mode = self.input_mode_var.get()
             
             # Get action based on type
             action_type = self.action_type_var.get()
@@ -2180,7 +2342,7 @@ Click "Debug Info" for current status information.
             self.rule_name_entry.delete(0, "end")
             self.template_name_entry.delete(0, "end")
             self.confidence_slider.set(0.8)
-            self.input_mode_combobox.set("controller")
+            self.input_mode_var.set("controller")
             self._on_input_mode_change()
             self.action_type_var.set("simple")
             self._on_action_type_change()
@@ -2464,8 +2626,8 @@ Click "Debug Info" for current status information.
             if not file_paths:
                 return
             
-            # Ensure templates directory exists
-            templates_dir = "templates"
+            # Ensure config-specific templates directory exists
+            templates_dir = self.config_manager.get_templates_dir()
             if not os.path.exists(templates_dir):
                 os.makedirs(templates_dir)
             
@@ -2543,37 +2705,67 @@ Click "Debug Info" for current status information.
             # Update config from GUI first
             self._save_gui_to_config()
             
-            # Ask for filename with centered dialog
-            temp_window = tk.Toplevel(self.root)
-            temp_window.withdraw()  # Hide the temporary window
-            self.center_dialog_on_main(temp_window)
-            
-            filename = tk.simpledialog.askstring("Save Configuration", 
-                                                "Enter configuration name:", 
-                                                initialvalue="my_config.json",
-                                                parent=temp_window)
-            
-            temp_window.destroy()  # Clean up
-            
-            if filename:
-                # Ensure .json extension
-                if not filename.endswith('.json'):
-                    filename += '.json'
-                
-                if self.config_manager.save_config(filename):
-                    self._add_log(f"Configuration saved as '{filename}'")
-                    self.show_centered_messagebox("Success", f"Configuration saved as '{filename}'", "info")
+            # Use last loaded config if available, otherwise prompt for new filename
+            if self.last_loaded_config:
+                # Save to the last loaded config file
+                if self.config_manager.save_config(os.path.basename(self.last_loaded_config)):
+                    self._update_templates_directory()  # Update templates directory
+                    self._add_log(f"Configuration saved to: {self.last_loaded_config}")
+                    self.show_centered_messagebox("Success", f"Configuration saved to '{os.path.basename(self.last_loaded_config)}'", "info")
                 else:
-                    self._add_log(f"Failed to save configuration '{filename}'")
-                    messagebox.showerror("Error", f"Failed to save configuration '{filename}'")
+                    self._add_log(f"Failed to save configuration to '{self.last_loaded_config}'")
+                    self.show_centered_messagebox("Error", f"Failed to save configuration to '{os.path.basename(self.last_loaded_config)}'", "error")
+            else:
+                # Ask for filename with centered dialog
+                temp_window = tk.Toplevel(self.root)
+                temp_window.withdraw()  # Hide the temporary window
+                self.center_dialog_on_main(temp_window)
+                
+                filename = tk.simpledialog.askstring("Save Configuration", 
+                                                    "Enter configuration name:", 
+                                                    initialvalue="my_config.json",
+                                                    parent=temp_window)
+                
+                temp_window.destroy()  # Clean up
+                
+                if filename:
+                    # Ensure .json extension
+                    if not filename.endswith('.json'):
+                        filename += '.json'
+                    
+                    if self.config_manager.save_config(filename):
+                        self.last_loaded_config = os.path.join("configs", filename)
+                        self._update_templates_directory()  # Update templates directory
+                        self._add_log(f"Configuration saved as '{filename}'")
+                        self.show_centered_messagebox("Success", f"Configuration saved as '{filename}'", "info")
+                        self._refresh_config_list()
+                    else:
+                        self._add_log(f"Failed to save configuration '{filename}'")
+                        self.show_centered_messagebox("Error", f"Failed to save configuration '{filename}'", "error")
             
         except Exception as e:
             self._add_log(f"Error saving configuration: {e}")
-            messagebox.showerror("Error", f"Failed to save configuration: {e}")
+            self.show_centered_messagebox("Error", f"Failed to save configuration: {e}", "error")
     
     def _load_config(self):
-        """Load configuration from file."""
+        """Load configuration from selected file or file dialog."""
         try:
+            # Check if a config is selected in the dropdown
+            selected_config = self.config_selection.get()
+            if selected_config and selected_config != "No configs found" and selected_config != "Error loading configs":
+                if self.config_manager.load_config(selected_config):
+                    self.last_loaded_config = os.path.join("configs", selected_config)
+                    self._update_templates_directory()  # Update templates directory
+                    self._load_config_to_gui()
+                    self._add_log(f"Configuration loaded: {selected_config}")
+                    self.show_centered_messagebox("Success", f"Configuration '{selected_config}' loaded successfully", "info")
+                    return
+                else:
+                    self._add_log(f"Failed to load configuration: {selected_config}")
+                    self.show_centered_messagebox("Error", f"Failed to load configuration: {selected_config}", "error")
+                    return
+            
+            # If no valid selection, use the existing file dialog method
             # Get available config files
             config_files = self.config_manager.get_config_files()
             
@@ -2626,6 +2818,7 @@ Click "Debug Info" for current status information.
                     
                     # Clear GUI and reload
                     self._clear_gui_fields()
+                    self._update_templates_directory()  # Update templates directory
                     self._load_config_to_gui()
                     
                     self.show_centered_messagebox("Success", f"Configuration loaded from '{selected_file}'", "info")
@@ -2690,6 +2883,238 @@ Click "Debug Info" for current status information.
             self._add_log(f"Error importing configuration: {e}")
             messagebox.showerror("Error", f"Failed to import configuration: {e}")
     
+    def _create_new_game_config(self):
+        """Create a new game configuration with guided setup."""
+        try:
+            # Create dialog for new game setup
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Create New Game Configuration")
+            dialog.geometry("550x500")
+            dialog.transient(self.root)
+            dialog.grab_set()
+            dialog.resizable(True, True)
+            dialog.minsize(500, 450)
+            
+            # Center the dialog
+            self.center_dialog_on_main(dialog)
+            
+            # Main frame with scrollable content
+            canvas = tk.Canvas(dialog)
+            scrollbar = tk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+            scrollable_frame = tk.Frame(canvas)
+            
+            scrollable_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+            
+            canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+            
+            # Pack canvas and scrollbar
+            canvas.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            
+            # Main content frame
+            main_frame = tk.Frame(scrollable_frame, padx=25, pady=25)
+            main_frame.pack(fill="both", expand=True)
+            
+            # Title
+            title_label = tk.Label(main_frame, text="🎮 Create New Game Configuration", 
+                                 font=("Arial", 18, "bold"))
+            title_label.pack(pady=(0, 25))
+            
+            # Game name section
+            game_section = tk.Frame(main_frame)
+            game_section.pack(fill="x", pady=(0, 20))
+            
+            tk.Label(game_section, text="Game Name:", font=("Arial", 12, "bold")).pack(anchor="w")
+            tk.Label(game_section, text="Enter a descriptive name for this game configuration", 
+                    font=("Arial", 10), fg="gray").pack(anchor="w", pady=(2, 5))
+            game_name_entry = tk.Entry(game_section, font=("Arial", 12), width=50)
+            game_name_entry.pack(fill="x", pady=(0, 5))
+            game_name_entry.focus()
+            
+            # Window title section
+            window_section = tk.Frame(main_frame)
+            window_section.pack(fill="x", pady=(0, 20))
+            
+            tk.Label(window_section, text="Window Title (partial match):", font=("Arial", 12, "bold")).pack(anchor="w")
+            tk.Label(window_section, text="Part of the game window title (e.g., 'Stumble', 'Xbox', 'Steam')", 
+                    font=("Arial", 10), fg="gray").pack(anchor="w", pady=(2, 5))
+            window_title_entry = tk.Entry(window_section, font=("Arial", 12), width=50)
+            window_title_entry.pack(fill="x", pady=(0, 5))
+            
+            # Resolution frame
+            res_section = tk.Frame(main_frame)
+            res_section.pack(fill="x", pady=(0, 20))
+            
+            tk.Label(res_section, text="Target Resolution:", font=("Arial", 12, "bold")).pack(anchor="w")
+            tk.Label(res_section, text="Expected game window size", 
+                    font=("Arial", 10), fg="gray").pack(anchor="w", pady=(2, 5))
+            
+            res_input_frame = tk.Frame(res_section)
+            res_input_frame.pack(fill="x", pady=(0, 10))
+            
+            width_entry = tk.Entry(res_input_frame, font=("Arial", 12), width=12)
+            width_entry.pack(side="left")
+            width_entry.insert(0, "1280")
+            
+            tk.Label(res_input_frame, text=" × ", font=("Arial", 12, "bold")).pack(side="left", padx=5)
+            
+            height_entry = tk.Entry(res_input_frame, font=("Arial", 12), width=12)
+            height_entry.pack(side="left")
+            height_entry.insert(0, "720")
+            
+            # Common resolutions
+            tk.Label(res_section, text="Quick presets:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 5))
+            common_res_frame = tk.Frame(res_section)
+            common_res_frame.pack(fill="x")
+            
+            def set_resolution(w, h):
+                width_entry.delete(0, tk.END)
+                width_entry.insert(0, str(w))
+                height_entry.delete(0, tk.END)
+                height_entry.insert(0, str(h))
+            
+            tk.Button(common_res_frame, text="1920×1080 (Full HD)", 
+                     command=lambda: set_resolution(1920, 1080), width=18).pack(side="left", padx=(0, 5))
+            tk.Button(common_res_frame, text="1280×720 (HD)", 
+                     command=lambda: set_resolution(1280, 720), width=15).pack(side="left", padx=5)
+            tk.Button(common_res_frame, text="1024×768", 
+                     command=lambda: set_resolution(1024, 768), width=12).pack(side="left", padx=5)
+            
+            # Description section
+            desc_section = tk.Frame(main_frame)
+            desc_section.pack(fill="x", pady=(25, 20))
+            
+            tk.Label(desc_section, text="📋 What this will create:", font=("Arial", 12, "bold")).pack(anchor="w")
+            
+            info_frame = tk.Frame(desc_section)
+            info_frame.pack(fill="x", pady=(10, 0))
+            
+            info_items = [
+                "• Create a new configuration file for this game",
+                "• Set up dedicated template directory",
+                "• Configure window and bot settings",
+                "• Reset all detection rules (clean slate)",
+                "• Ready for importing templates and creating rules"
+            ]
+            
+            for item in info_items:
+                tk.Label(info_frame, text=item, font=("Arial", 11), justify="left").pack(anchor="w", pady=1)
+            
+            # Buttons section
+            button_section = tk.Frame(main_frame)
+            button_section.pack(fill="x", pady=(30, 10))
+            
+            # Add some spacing
+            tk.Frame(button_section, height=10).pack()
+            
+            button_frame = tk.Frame(button_section)
+            button_frame.pack(fill="x")
+            
+            result = {"created": False}
+            
+            def create_config():
+                game_name = game_name_entry.get().strip()
+                window_title = window_title_entry.get().strip()
+                
+                if not game_name:
+                    tk.messagebox.showerror("Error", "Please enter a game name.", parent=dialog)
+                    return
+                
+                if not window_title:
+                    tk.messagebox.showerror("Error", "Please enter a window title.", parent=dialog)
+                    return
+                
+                try:
+                    width = int(width_entry.get())
+                    height = int(height_entry.get())
+                    if width <= 0 or height <= 0:
+                        raise ValueError()
+                except ValueError:
+                    tk.messagebox.showerror("Error", "Please enter valid resolution values.", parent=dialog)
+                    return
+                
+                # Create new config
+                self._create_new_config(game_name, window_title, width, height)
+                result["created"] = True
+                dialog.destroy()
+            
+            def cancel():
+                dialog.destroy()
+            
+            # Create larger, more prominent buttons
+            tk.Button(button_frame, text="✅ Create Configuration", command=create_config, 
+                     bg="#4CAF50", fg="white", font=("Arial", 12, "bold"), 
+                     width=25, height=2).pack(side="right", padx=(15, 0))
+            tk.Button(button_frame, text="❌ Cancel", command=cancel, 
+                     font=("Arial", 11), width=15, height=2).pack(side="right")
+            
+            # Bind mouse wheel to canvas for scrolling (only within dialog)
+            def _on_mousewheel(event):
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            
+            # Bind mouse wheel directly to canvas and dialog
+            canvas.bind("<MouseWheel>", _on_mousewheel)
+            dialog.bind("<MouseWheel>", _on_mousewheel)
+            
+            # Also bind to scrollable_frame for better coverage
+            scrollable_frame.bind("<MouseWheel>", _on_mousewheel)
+            
+            # Wait for dialog to close
+            dialog.wait_window()
+            
+            if result["created"]:
+                self._add_log("New game configuration created successfully")
+            
+        except Exception as e:
+            self._add_log(f"Error creating new game configuration: {e}")
+            self.show_centered_messagebox("Error", f"Failed to create new configuration: {e}", "error")
+    
+    def _create_new_config(self, game_name: str, window_title: str, width: int, height: int):
+        """Create a new configuration with the specified settings."""
+        try:
+            # Reset to default configuration
+            self.config_manager.reset_to_defaults()
+            
+            # Set the new game settings
+            self.config_manager.set_window_config(window_title, width, height)
+            
+            # Generate config filename from game name
+            safe_name = "".join(c for c in game_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            safe_name = safe_name.replace(' ', '_').lower()
+            config_filename = f"{safe_name}.json"
+            
+            # Save the new configuration
+            if self.config_manager.save_config(config_filename):
+                self.last_loaded_config = os.path.join("configs", config_filename)
+                self._update_templates_directory()  # Create config-specific template directory
+                
+                # Clear and reload GUI
+                self._clear_gui_fields()
+                self._load_config_to_gui()
+                self._refresh_config_list()
+                
+                # Select the new config in dropdown
+                self.config_selection.set(config_filename)
+                
+                self.show_centered_messagebox("Success", 
+                                            f"New game configuration '{game_name}' created!\\n\\n"
+                                            f"Config file: {config_filename}\\n"
+                                            f"Template directory: templates/{safe_name}/\\n\\n"
+                                            f"Next steps:\\n"
+                                            f"1. Import templates for this game\\n"
+                                            f"2. Create detection rules\\n"
+                                            f"3. Configure actions", "info")
+            else:
+                self.show_centered_messagebox("Error", "Failed to save the new configuration", "error")
+                
+        except Exception as e:
+            self._add_log(f"Error creating new configuration: {e}")
+            self.show_centered_messagebox("Error", f"Failed to create new configuration: {e}", "error")
+
     def _show_template_stats(self):
         """Show comprehensive template statistics and management info."""
         try:
@@ -2804,9 +3229,9 @@ Click "Debug Info" for current status information.
     def _browse_templates(self):
         """Show available templates for selection with adaptive sizing."""
         try:
-            # Get available templates
+            # Get available templates from config-specific directory
             available_templates = []
-            templates_dir = "templates"
+            templates_dir = self.config_manager.get_templates_dir()
             
             if os.path.exists(templates_dir):
                 for file in os.listdir(templates_dir):
@@ -2814,7 +3239,8 @@ Click "Debug Info" for current status information.
                         available_templates.append(file)
             
             if not available_templates:
-                self.show_centered_messagebox("No Templates", "No template files found in templates/ directory", "info")
+                config_name = os.path.splitext(os.path.basename(self.config_manager.current_config_filename or "default"))[0]
+                self.show_centered_messagebox("No Templates", f"No template files found in templates/{config_name}/ directory", "info")
                 return
             
             # Calculate optimal window size based on content
@@ -3177,7 +3603,7 @@ Click "Debug Info" for current status information.
     def _on_input_mode_change(self, selected_mode=None):
         """Handle input mode change to update available actions."""
         try:
-            input_mode = self.input_mode_combobox.get()
+            input_mode = self.input_mode_var.get()
             
             # Import new enums
             from modules.virtual_controller import KeyboardKey, MouseButton, XboxButton
@@ -3291,26 +3717,631 @@ Notes:
 """
         self._add_log(help_text)
     
+    def _toggle_process_focus(self):
+        """Toggle process focus monitoring."""
+        self.process_focus_enabled = self.process_focus_var.get()
+        
+        if self.process_focus_enabled:
+            # Get process name from entry
+            self.target_process_name = self.process_name_entry.get().strip()
+            
+            if not self.target_process_name:
+                self.show_centered_messagebox("Error", "Please enter a process name (e.g., xbox.exe)", "error")
+                self.process_focus_var.set(False)
+                return
+            
+            # Start focus monitoring
+            self._start_focus_monitoring()
+            self.process_focus_status.configure(text=f"Status: Monitoring {self.target_process_name}", text_color="green")
+            self._add_log(f"🎯 Process focus monitoring enabled for: {self.target_process_name}")
+        else:
+            # Stop focus monitoring
+            self._stop_focus_monitoring()
+            self.process_focus_status.configure(text="Status: Disabled", text_color="gray")
+            self._add_log("🎯 Process focus monitoring disabled")
+    
+    def _start_focus_monitoring(self):
+        """Start monitoring process focus."""
+        if self.focus_check_timer:
+            self.root.after_cancel(self.focus_check_timer)
+        
+        self._check_process_focus()
+    
+    def _stop_focus_monitoring(self):
+        """Stop monitoring process focus."""
+        if self.focus_check_timer:
+            self.root.after_cancel(self.focus_check_timer)
+            self.focus_check_timer = None
+        
+        self.last_focused_state = None
+    
+    def _check_process_focus(self):
+        """Check if target process is currently focused."""
+        if not self.process_focus_enabled:
+            return
+        
+        try:
+            # Try multiple methods to get focused process
+            is_focused = False
+            current_process = ""
+            
+            # Method 1: Try Windows API (most reliable)
+            if WINAPI_AVAILABLE:
+                try:
+                    hwnd = win32gui.GetForegroundWindow()
+                    if hwnd != 0:
+                        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                        
+                        # Try to get process info
+                        try:
+                            import psutil
+                            process = psutil.Process(pid)
+                            current_process = process.name().lower()
+                        except ImportError:
+                            # Fallback: Get window title if psutil not available
+                            window_title = win32gui.GetWindowText(hwnd).lower()
+                            current_process = window_title
+                        
+                        # Check if it matches target (multiple matching strategies)
+                        target_lower = self.target_process_name.lower()
+                        
+                        # Remove .exe if present for comparison
+                        target_name = target_lower.replace('.exe', '')
+                        current_name = current_process.replace('.exe', '')
+                        
+                        # Multiple matching strategies
+                        is_focused = (
+                            current_process == target_lower or  # Exact match
+                            current_name == target_name or     # Name without extension
+                            target_name in current_process or  # Target is substring
+                            current_name.startswith(target_name)  # Starts with target
+                        )
+                
+                except Exception as e:
+                    self._add_log(f"Windows API focus check failed: {e}")
+            
+            # Method 2: Fallback using process enumeration
+            if not is_focused:
+                try:
+                    import psutil
+                    target_lower = self.target_process_name.lower().replace('.exe', '')
+                    
+                    # Check if any process with target name exists and has a window
+                    for proc in psutil.process_iter(['pid', 'name']):
+                        try:
+                            proc_name = proc.info['name'].lower().replace('.exe', '')
+                            if target_lower in proc_name or proc_name.startswith(target_lower):
+                                # Found matching process, assume focused if no better info
+                                current_process = proc.info['name']
+                                is_focused = True
+                                break
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+                            
+                except ImportError:
+                    self._add_log("psutil not available - install with: pip install psutil")
+                    self.process_focus_enabled = False
+                    self.process_focus_var.set(False)
+                    return
+            
+            # Update status if changed
+            if is_focused != self.last_focused_state:
+                self.last_focused_state = is_focused
+                
+                if is_focused:
+                    self.process_focus_status.configure(text=f"Status: ✓ {current_process} FOCUSED", text_color="green")
+                    self._add_log(f"🎯 Target process '{current_process}' is now focused")
+                else:
+                    self.process_focus_status.configure(text=f"Status: ⚠️ {self.target_process_name} NOT focused", text_color="orange")
+                    self._add_log(f"🎯 Target process '{self.target_process_name}' lost focus")
+            
+            # Control ALL bot operations based on focus (not just KB2JOY)
+            if hasattr(self, 'process_focus_enabled') and self.process_focus_enabled:
+                # Store focus state for bot operations to check
+                self.is_target_process_focused = is_focused
+                
+                # Also control KB2JOY if it's enabled
+                if hasattr(self, 'kb2joy_enabled') and self.kb2joy_enabled:
+                    if is_focused and not self._is_kb2joy_actually_active():
+                        # Resume KB2JOY
+                        self._resume_kb2joy()
+                    elif not is_focused and self._is_kb2joy_actually_active():
+                        # Pause KB2JOY
+                        self._pause_kb2joy()
+        
+        except Exception as e:
+            self._add_log(f"Error in focus monitoring: {e}")
+        
+        # Schedule next check
+        if self.process_focus_enabled:
+            self.focus_check_timer = self.root.after(self.focus_check_interval, self._check_process_focus)
+    
+    def _is_kb2joy_actually_active(self):
+        """Check if KB2JOY is currently processing inputs."""
+        return (self.kb2joy_enabled and 
+                self.kb2joy_listener is not None and 
+                self.kb2joy_listener.running)
+    
+    def _pause_kb2joy(self):
+        """Temporarily pause KB2JOY without changing the enabled state."""
+        if self.kb2joy_listener and self.kb2joy_listener.running:
+            try:
+                self.kb2joy_listener.stop()
+                if self.kb2joy_mouse_listener and self.kb2joy_mouse_listener.running:
+                    self.kb2joy_mouse_listener.stop()
+                self._add_log("⏸️ KB2JOY paused (target process not focused)")
+            except:
+                pass
+    
+    def _resume_kb2joy(self):
+        """Resume KB2JOY if it was enabled."""
+        if self.kb2joy_enabled and not self._is_kb2joy_actually_active():
+            try:
+                self._start_kb2joy_listeners()
+                self._add_log("▶️ KB2JOY resumed (target process focused)")
+            except Exception as e:
+                self._add_log(f"Error resuming KB2JOY: {e}")
+    
+    def _start_kb2joy_listeners(self):
+        """Start KB2JOY listeners (used by resume functionality)."""
+        if not PYNPUT_AVAILABLE:
+            return
+        
+        try:
+            # Call the main toggle method to start everything properly
+            if not self.kb2joy_enabled:
+                self.kb2joy_enabled = True
+                self._start_kb2joy()
+        except Exception as e:
+            self._add_log(f"Error starting KB2JOY listeners: {e}")
+    
+    def _toggle_hotkey_listener(self):
+        """Toggle KB2JOY hotkey listener."""
+        self.kb2joy_hotkey_enabled = self.kb2joy_hotkey_var.get()
+        
+        if self.kb2joy_hotkey_enabled:
+            # Use current hotkey (default or captured)
+            if not hasattr(self, 'kb2joy_hotkey') or not self.kb2joy_hotkey:
+                self.kb2joy_hotkey = "<ctrl>+<shift>+<f1>"
+            
+            # Start hotkey listener
+            success = self._start_hotkey_listener()
+            if success:
+                display_hotkey = self._format_hotkey_display(self.kb2joy_hotkey)
+                self.hotkey_status_label.configure(text=f"Hotkey: {display_hotkey} (Active)", text_color="green")
+                self._add_log(f"🔥 KB2JOY hotkey enabled: {display_hotkey}")
+            else:
+                self.kb2joy_hotkey_var.set(False)
+        else:
+            # Stop hotkey listener
+            self._stop_hotkey_listener()
+            self.hotkey_status_label.configure(text="Hotkey: Disabled", text_color="gray")
+            self._add_log("🔥 KB2JOY hotkey disabled")
+    
+    def _start_hotkey_listener(self):
+        """Start listening for KB2JOY toggle hotkey."""
+        if not PYNPUT_AVAILABLE:
+            self._add_log("pynput not available - hotkey feature disabled")
+            return False
+        
+        try:
+            from pynput import keyboard
+            
+            # Stop existing listener
+            if self.kb2joy_hotkey_listener:
+                try:
+                    self.kb2joy_hotkey_listener.stop()
+                except:
+                    pass
+            
+            # Use the stored hotkey or default
+            hotkey_combo = self.kb2joy_hotkey if hasattr(self, 'kb2joy_hotkey') else "<ctrl>+<shift>+<f1>"
+            
+            # Create and start listener
+            self.kb2joy_hotkey_listener = keyboard.GlobalHotKeys({
+                hotkey_combo: self._hotkey_toggle_kb2joy
+            })
+            
+            self.kb2joy_hotkey_listener.start()
+            self._add_log(f"Hotkey listener started successfully: {self._format_hotkey_display(hotkey_combo)}")
+            return True
+            
+        except Exception as e:
+            self._add_log(f"Error starting hotkey listener: {e}")
+            self._add_log(f"Attempted hotkey: {getattr(self, 'kb2joy_hotkey', 'unknown')}")
+            self.kb2joy_hotkey_enabled = False
+            self.kb2joy_hotkey_var.set(False)
+            return False
+    
+    def _stop_hotkey_listener(self):
+        """Stop KB2JOY hotkey listener."""
+        if self.kb2joy_hotkey_listener:
+            try:
+                self.kb2joy_hotkey_listener.stop()
+                self.kb2joy_hotkey_listener = None
+            except:
+                pass
+    
+    def _capture_hotkey(self):
+        """Capture a hotkey combination from user input."""
+        if not PYNPUT_AVAILABLE:
+            self.show_centered_messagebox("Error", "pynput not available - install with: pip install pynput", "error")
+            return
+        
+        # Show capture dialog
+        capture_dialog = ctk.CTkToplevel(self.root)
+        capture_dialog.title("Capture Hotkey")
+        capture_dialog.geometry("400x200")
+        capture_dialog.transient(self.root)
+        capture_dialog.grab_set()
+        
+        # Center on parent
+        self.center_dialog_on_main(capture_dialog)
+        
+        # Instructions
+        ctk.CTkLabel(capture_dialog, text="Press your desired hotkey combination", 
+                    font=ctk.CTkFont(size=14, weight="bold")).pack(pady=20)
+        
+        ctk.CTkLabel(capture_dialog, text="Examples: Ctrl+Shift+F1, Alt+F2, Ctrl+Alt+X", 
+                    font=ctk.CTkFont(size=11)).pack(pady=5)
+        
+        # Display captured keys
+        self.captured_keys_label = ctk.CTkLabel(capture_dialog, text="Waiting for input...", 
+                                              font=ctk.CTkFont(size=12), 
+                                              fg_color="gray20", corner_radius=5)
+        self.captured_keys_label.pack(pady=10, padx=20, fill="x")
+        
+        # Buttons
+        button_frame = ctk.CTkFrame(capture_dialog)
+        button_frame.pack(pady=20)
+        
+        self.capture_apply_btn = ctk.CTkButton(button_frame, text="Apply", 
+                                             command=lambda: self._apply_captured_hotkey(capture_dialog),
+                                             state="disabled")
+        self.capture_apply_btn.pack(side="left", padx=10)
+        
+        ctk.CTkButton(button_frame, text="Cancel", 
+                     command=capture_dialog.destroy).pack(side="left", padx=10)
+        
+        # Start capturing
+        self.captured_hotkey = None
+        self.pressed_keys = set()
+        self._start_hotkey_capture(capture_dialog)
+    
+    def _start_hotkey_capture(self, dialog):
+        """Start capturing hotkey input."""
+        try:
+            from pynput import keyboard
+            
+            def on_press(key):
+                try:
+                    # Convert key to string representation
+                    if hasattr(key, 'char') and key.char:
+                        key_str = key.char.lower()
+                    else:
+                        key_str = str(key).replace('Key.', '')
+                    
+                    self.pressed_keys.add(key_str)
+                    self._update_capture_display()
+                    
+                except Exception as e:
+                    print(f"Error in key capture: {e}")
+            
+            def on_release(key):
+                try:
+                    # When keys are released, finalize the combination
+                    if len(self.pressed_keys) >= 2:  # Require at least 2 keys for hotkey
+                        self._finalize_hotkey_capture()
+                        
+                except Exception as e:
+                    print(f"Error in key release: {e}")
+            
+            # Create temporary listener
+            self.temp_hotkey_listener = keyboard.Listener(
+                on_press=on_press,
+                on_release=on_release
+            )
+            self.temp_hotkey_listener.start()
+            
+        except Exception as e:
+            self.show_centered_messagebox("Error", f"Failed to start hotkey capture: {e}", "error")
+            dialog.destroy()
+    
+    def _update_capture_display(self):
+        """Update the display of captured keys."""
+        if hasattr(self, 'captured_keys_label'):
+            keys_text = " + ".join(sorted(self.pressed_keys))
+            self.captured_keys_label.configure(text=f"Captured: {keys_text}")
+    
+    def _finalize_hotkey_capture(self):
+        """Finalize the captured hotkey."""
+        if len(self.pressed_keys) >= 2:
+            # Convert to pynput format
+            pynput_keys = []
+            for key in sorted(self.pressed_keys):
+                if key in ['ctrl', 'control']:
+                    pynput_keys.append('<ctrl>')
+                elif key in ['shift']:
+                    pynput_keys.append('<shift>')
+                elif key in ['alt']:
+                    pynput_keys.append('<alt>')
+                elif key in ['cmd', 'win', 'windows']:
+                    pynput_keys.append('<cmd>')
+                elif len(key) == 1:
+                    pynput_keys.append(key)
+                else:
+                    pynput_keys.append(f'<{key}>')
+            
+            self.captured_hotkey = "+".join(pynput_keys)
+            
+            # Update display
+            display_text = self._format_hotkey_display(self.captured_hotkey)
+            self.captured_keys_label.configure(text=f"Hotkey: {display_text}")
+            self.capture_apply_btn.configure(state="normal")
+            
+            # Stop listener
+            if hasattr(self, 'temp_hotkey_listener'):
+                try:
+                    self.temp_hotkey_listener.stop()
+                except:
+                    pass
+    
+    def _apply_captured_hotkey(self, dialog):
+        """Apply the captured hotkey."""
+        if self.captured_hotkey:
+            self.kb2joy_hotkey = self.captured_hotkey
+            display_text = self._format_hotkey_display(self.captured_hotkey)
+            self.hotkey_display.configure(text=display_text)
+            self._add_log(f"🔥 Hotkey set to: {display_text}")
+            
+            # Restart listener if it was active
+            if self.kb2joy_hotkey_enabled:
+                self._start_hotkey_listener()
+        
+        dialog.destroy()
+    
+    def _format_hotkey_display(self, hotkey_str):
+        """Format hotkey for user-friendly display."""
+        if not hotkey_str:
+            return "None"
+        
+        # Convert pynput format to readable format
+        display_str = hotkey_str.replace('<ctrl>', 'Ctrl')
+        display_str = display_str.replace('<shift>', 'Shift')
+        display_str = display_str.replace('<alt>', 'Alt')
+        display_str = display_str.replace('<cmd>', 'Win')
+        display_str = display_str.replace('<', '').replace('>', '')
+        display_str = display_str.replace('+', ' + ')
+        
+        return display_str
+    
+    def _hotkey_toggle_kb2joy(self):
+        """Toggle KB2JOY when hotkey is pressed."""
+        try:
+            # Toggle the main KB2JOY switch
+            current_state = self.kb2joy_enabled_var.get()
+            new_state = not current_state
+            
+            self.kb2joy_enabled_var.set(new_state)
+            
+            # Update the toggle switch in UI
+            self.kb2joy_toggle.select() if new_state else self.kb2joy_toggle.deselect()
+            
+            # Call the toggle function
+            self._toggle_kb2joy()
+            
+            # Log the change
+            status = "ENABLED" if new_state else "DISABLED"
+            self._add_log(f"🔥 KB2JOY {status} via hotkey: {self.kb2joy_hotkey}")
+            
+        except Exception as e:
+            self._add_log(f"Error in hotkey toggle: {e}")
+    
+    def _validate_process_name(self):
+        """Validate the entered process name against running processes."""
+        process_name = self.process_name_entry.get().strip()
+        
+        if not process_name:
+            self.show_centered_messagebox("Error", "Please enter a process name", "error")
+            return
+        
+        try:
+            import psutil
+            
+            # Find matching processes
+            matching_processes = []
+            target_lower = process_name.lower().replace('.exe', '')
+            
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    proc_name = proc.info['name'].lower().replace('.exe', '')
+                    if (target_lower == proc_name or 
+                        target_lower in proc_name or 
+                        proc_name.startswith(target_lower)):
+                        matching_processes.append(proc.info['name'])
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            
+            if matching_processes:
+                # Remove duplicates and sort
+                unique_processes = sorted(list(set(matching_processes)))
+                
+                if len(unique_processes) == 1:
+                    self.show_centered_messagebox("Process Found", 
+                                                f"✓ Process '{unique_processes[0]}' is currently running", 
+                                                "info")
+                else:
+                    process_list = "\\n".join([f"• {proc}" for proc in unique_processes])
+                    self.show_centered_messagebox("Multiple Processes Found", 
+                                                f"Found {len(unique_processes)} matching processes:\\n\\n{process_list}", 
+                                                "info")
+            else:
+                self.show_centered_messagebox("Process Not Found", 
+                                            f"No running processes match '{process_name}'\\n\\nTry:\\n• Opening the application first\\n• Using exact process name\\n• Browsing process list", 
+                                            "warning")
+                
+        except ImportError:
+            self.show_centered_messagebox("Error", "psutil not available - install with: pip install psutil", "error")
+        except Exception as e:
+            self.show_centered_messagebox("Error", f"Error checking processes: {e}", "error")
+    
+    def _browse_processes(self):
+        """Show a dialog to browse and select from running processes."""
+        try:
+            import psutil
+            
+            # Create process browser dialog
+            browser_dialog = ctk.CTkToplevel(self.root)
+            browser_dialog.title("Select Process")
+            browser_dialog.geometry("500x400")
+            browser_dialog.transient(self.root)
+            browser_dialog.grab_set()
+            
+            # Center on parent
+            self.center_dialog_on_main(browser_dialog)
+            
+            # Instructions
+            ctk.CTkLabel(browser_dialog, text="Select a process to monitor:", 
+                        font=ctk.CTkFont(size=14, weight="bold")).pack(pady=10)
+            
+            # Search frame
+            search_frame = ctk.CTkFrame(browser_dialog)
+            search_frame.pack(fill="x", padx=10, pady=(0, 10))
+            
+            ctk.CTkLabel(search_frame, text="Filter:", width=50).pack(side="left", padx=5)
+            search_entry = ctk.CTkEntry(search_frame, placeholder_text="Type to filter processes...")
+            search_entry.pack(side="left", fill="x", expand=True, padx=5)
+            
+            # Process list frame
+            list_frame = ctk.CTkFrame(browser_dialog)
+            list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            
+            # Create scrollable text widget for process list
+            import tkinter.ttk as ttk
+            
+            # Create treeview for better process display
+            process_tree = ttk.Treeview(list_frame, columns=('name', 'pid'), show='headings', height=15)
+            process_tree.heading('name', text='Process Name')
+            process_tree.heading('pid', text='PID')
+            process_tree.column('name', width=300)
+            process_tree.column('pid', width=80)
+            
+            # Scrollbar
+            scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=process_tree.yview)
+            process_tree.configure(yscrollcommand=scrollbar.set)
+            
+            # Pack treeview and scrollbar
+            process_tree.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+            
+            # Get all processes
+            all_processes = []
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    all_processes.append((proc.info['name'], proc.info['pid']))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            
+            # Remove duplicates and sort by name
+            unique_processes = sorted(list(set(all_processes)), key=lambda x: x[0].lower())
+            
+            def update_process_list(filter_text=""):
+                # Clear existing items
+                for item in process_tree.get_children():
+                    process_tree.delete(item)
+                
+                # Add filtered processes
+                filter_lower = filter_text.lower()
+                for proc_name, pid in unique_processes:
+                    if not filter_text or filter_lower in proc_name.lower():
+                        process_tree.insert('', 'end', values=(proc_name, pid))
+            
+            def on_search_change(*args):
+                update_process_list(search_entry.get())
+            
+            # Bind search
+            search_entry.bind('<KeyRelease>', on_search_change)
+            
+            # Initial population
+            update_process_list()
+            
+            # Button frame
+            button_frame = ctk.CTkFrame(browser_dialog)
+            button_frame.pack(pady=10)
+            
+            def select_process():
+                selection = process_tree.selection()
+                if selection:
+                    item = process_tree.item(selection[0])
+                    process_name = item['values'][0]
+                    
+                    # Set in the entry field
+                    self.process_name_entry.delete(0, "end")
+                    self.process_name_entry.insert(0, process_name)
+                    
+                    self._add_log(f"🎯 Selected process: {process_name}")
+                    browser_dialog.destroy()
+                else:
+                    self.show_centered_messagebox("No Selection", "Please select a process from the list", "warning")
+            
+            ctk.CTkButton(button_frame, text="Select", 
+                         command=select_process).pack(side="left", padx=10)
+            ctk.CTkButton(button_frame, text="Cancel", 
+                         command=browser_dialog.destroy).pack(side="left", padx=10)
+            
+            # Double-click to select
+            def on_double_click(event):
+                select_process()
+            
+            process_tree.bind('<Double-1>', on_double_click)
+            
+        except ImportError:
+            self.show_centered_messagebox("Error", "psutil not available - install with: pip install psutil", "error")
+        except Exception as e:
+            self.show_centered_messagebox("Error", f"Error browsing processes: {e}", "error")
+    
+    def _should_bot_operate(self):
+        """Check if bot operations should be allowed based on process focus."""
+        if not hasattr(self, 'process_focus_enabled') or not self.process_focus_enabled:
+            return True  # Always allow if process focus is disabled
+        
+        return getattr(self, 'is_target_process_focused', True)
+    
     def _on_closing(self):
         """Handle application closing."""
-        # Cancel any pending geometry save timer
-        if self.geometry_save_timer:
-            self.root.after_cancel(self.geometry_save_timer)
-            self.geometry_save_timer = None
-        
-        # Save window geometry before closing (final save)
-        self._save_window_geometry()
-        
-        # Stop KB2JOY if running
-        if hasattr(self, 'kb2joy_enabled') and self.kb2joy_enabled:
-            self._stop_kb2joy()
-        
-        if self.bot_thread and self.bot_thread.is_running():
-            if self.show_centered_messagebox("Confirm Exit", "Bot is running. Stop bot and exit?", "question"):
-                self.bot_thread.stop_bot()
+        try:
+            # Cancel any pending geometry save timer
+            if self.geometry_save_timer:
+                self.root.after_cancel(self.geometry_save_timer)
+                self.geometry_save_timer = None
+            
+            # Stop process focus monitoring
+            self._stop_focus_monitoring()
+            
+            # Stop hotkey listener
+            self._stop_hotkey_listener()
+            
+            # Save window geometry before closing (final save)
+            self._save_window_geometry()
+            
+            # Stop KB2JOY if running
+            if hasattr(self, 'kb2joy_enabled') and self.kb2joy_enabled:
+                self._stop_kb2joy()
+            
+            if self.bot_thread and self.bot_thread.is_running():
+                if self.show_centered_messagebox("Confirm Exit", "Bot is running. Stop bot and exit?", "question"):
+                    self.bot_thread.stop_bot()
+                    self.root.destroy()
+            else:
                 self.root.destroy()
-        else:
-            self.root.destroy()
+                
+        except Exception as e:
+            print(f"Error during closing: {e}")
+            # Force destroy if there's an error
+            try:
+                self.root.destroy()
+            except:
+                pass
     
     def _toggle_rule_enabled(self, rule_index: int):
         """Toggle the enabled state of a rule."""
@@ -3432,27 +4463,32 @@ Notes:
             # Check if suppress setting is enabled
             suppress_enabled = self.kb2joy_suppress_input_var.get() if hasattr(self, 'kb2joy_suppress_input_var') else True
             
-            # Use a more robust approach - start without suppression and use a monitoring system
+            # Create set of keys that should be blocked (only mapped keys)
+            self.keys_to_suppress = set(self.kb2joy_mappings.values())
+            
+            # Use selective suppression with Windows hook (only mapped keys)
             if suppress_enabled:
-                self._add_log("🔒 Attempting advanced suppression mode with monitoring")
-                # Try suppression with careful monitoring
-                try:
-                    self.kb2joy_listener = keyboard.Listener(
-                        on_press=self._on_kb2joy_key_press_monitored,
-                        on_release=self._on_kb2joy_key_release,
-                        suppress=True  # Enable suppression with monitoring
-                    )
-                    self.kb2joy_suppression_active = True
-                    self.kb2joy_last_activity = time.time()
-                except Exception as e:
-                    self._add_log(f"Suppression setup failed: {e}")
-                    # Fall back to non-suppression
-                    self.kb2joy_listener = keyboard.Listener(
-                        on_press=self._on_kb2joy_key_press,
-                        on_release=self._on_kb2joy_key_release,
-                        suppress=False
-                    )
+                self._add_log("🔒 Starting selective suppression mode (mapped keys only)")
+                
+                # Always use pynput WITHOUT global suppression to avoid blocking all keys
+                self.kb2joy_listener = keyboard.Listener(
+                    on_press=self._on_kb2joy_key_press,
+                    on_release=self._on_kb2joy_key_release,
+                    suppress=False  # Never use global suppression
+                )
+                
+                # Mark suppression as active for Windows hook
+                self.kb2joy_suppression_active = True
+                
+                # Update the set of keys that should be selectively suppressed
+                self._update_suppressed_keys()
+                
+                # Install Windows hook for selective key suppression (mapped keys only)
+                hook_success = self._install_keyboard_hook()
+                if not hook_success:
+                    self._add_log("⚠️  Windows hook failed - falling back to conversion-only mode")
                     self.kb2joy_suppression_active = False
+                    
             else:
                 self._add_log("🔓 Using conversion-only mode")
                 # Use without suppression
@@ -3496,14 +4532,19 @@ Notes:
                 # Try fallback mode
                 self._start_kb2joy_fallback_mode()
             
-            if suppress_enabled:
-                self._add_log("🔒 Attempting keyboard suppression mode")
-                self._add_log("⚠️  If keys still pass through, try running as Administrator")
-                self._add_log("⚠️  Will automatically fall back to conversion-only if suppression fails")
+            if suppress_enabled and self.kb2joy_suppression_active:
+                self._add_log("🔒 SELECTIVE suppression mode active")
+                self._add_log("✅ Only MAPPED keys will be suppressed")
+                self._add_log("✅ Unmapped keys will pass through normally")
+                self._add_log("⚠️  If mapped keys still pass through, try running as Administrator")
+            elif suppress_enabled:
+                self._add_log("🔓 Selective suppression failed - using conversion-only mode")
+                self._add_log("✅ All keys will pass through + be converted if mapped")
             else:
-                self._add_log("🔓 Conversion-only mode - original inputs will pass through")
+                self._add_log("🔓 Conversion-only mode - all keys pass through")
             
-            self._add_log(f"Target mode: {'SUPPRESSION' if suppress_enabled else 'CONVERSION-ONLY'}")
+            mode = 'SELECTIVE SUPPRESSION' if (suppress_enabled and self.kb2joy_suppression_active) else 'CONVERSION-ONLY'
+            self._add_log(f"Target mode: {mode}")
             
         except Exception as e:
             self._add_log(f"Error starting KB2JOY: {e}")
@@ -3515,6 +4556,9 @@ Notes:
         try:
             self.kb2joy_enabled = False
             self.kb2joy_suppression_active = False
+            
+            # Uninstall Windows keyboard hook
+            self._uninstall_keyboard_hook()
             
             # Stop pynput listeners
             if self.kb2joy_listener:
@@ -3548,6 +4592,11 @@ Notes:
         if not self.kb2joy_enabled or self.kb2joy_capture_mode:
             return  # Don't process, but keep listener active
         
+        # Check if bot should work (process focus)
+        if hasattr(self, 'process_focus_enabled') and self.process_focus_enabled:
+            if not getattr(self, 'is_target_process_focused', True):
+                return  # Don't process if target process not focused
+        
         try:
             # Convert key to string representation
             key_str = self._key_to_string(key)
@@ -3561,12 +4610,12 @@ Notes:
                         self.virtual_controller.press_button(button, duration=0.1)
                         
                         # Log the conversion
-                        should_suppress = self.kb2joy_suppress_enabled
+                        focus_status = "FOCUSED" if getattr(self, 'is_target_process_focused', True) else "NOT FOCUSED"
                         
-                        if should_suppress:
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED - original may pass through]")
+                        if self.kb2joy_suppression_active:
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED + SELECTIVELY SUPPRESSED] [{focus_status}]")
                         else:
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED - pass-through mode]")
+                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED - pass-through] [{focus_status}]")
                         
                         # Break after first match to avoid multiple conversions
                         break
@@ -3582,6 +4631,11 @@ Notes:
         if not self.kb2joy_enabled or self.kb2joy_capture_mode:
             return True
         
+        # Check if bot should work (process focus)
+        if hasattr(self, 'process_focus_enabled') and self.process_focus_enabled:
+            if not getattr(self, 'is_target_process_focused', True):
+                return True  # Allow ALL keys through if target process not focused
+        
         try:
             # Update activity timestamp
             self.kb2joy_last_activity = time.time()
@@ -3591,33 +4645,40 @@ Notes:
             
             # Debug logging if enabled
             if self.kb2joy_debug_mode:
-                self._add_log(f"🔍 Pynput: {key_str}")
+                focus_status = "FOCUSED" if getattr(self, 'is_target_process_focused', True) else "NOT FOCUSED"
+                self._add_log(f"🔍 Pynput: {key_str} [{focus_status}]")
             
-            # Check if this key is mapped
+            # Check if this SPECIFIC key is mapped
+            mapped_xbox_button = None
             for xbox_button, mapped_input in self.kb2joy_mappings.items():
                 if mapped_input == key_str:
-                    # Send Xbox controller input
-                    button = self.virtual_controller.get_button_from_string(xbox_button)
-                    if button:
-                        self.virtual_controller.press_button(button, duration=0.1)
-                        
-                        # Check if user wants experimental suppression
-                        if (self.kb2joy_suppression_active and 
+                    mapped_xbox_button = xbox_button
+                    break
+            
+            if mapped_xbox_button:
+                # This key IS mapped - send Xbox controller input
+                button = self.virtual_controller.get_button_from_string(mapped_xbox_button)
+                if button:
+                    self.virtual_controller.press_button(button, duration=0.1)
+                    
+                    focus_status = "FOCUSED" if getattr(self, 'is_target_process_focused', True) else "NOT FOCUSED"
+                    
+                    # Only suppress THIS SPECIFIC MAPPED KEY if suppression enabled
+                    if (self.kb2joy_suppression_active and 
                             hasattr(self, 'kb2joy_advanced_suppress_var') and 
                             self.kb2joy_advanced_suppress_var and
                             self.kb2joy_advanced_suppress_var.get()):
                             
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [EXPERIMENTAL SUPPRESSION]")
-                            # WARNING: This may break the listener!
-                            return False
+                        self._add_log(f"KB2JOY: {key_str} -> {mapped_xbox_button} [EXPERIMENTAL SUPPRESSION] [{focus_status}]")
+                        # WARNING: This may break the listener!
+                        return False
+                    else:
+                        # Safe mode - always allow original input through
+                        if self.kb2joy_suppression_active:
+                            self._add_log(f"KB2JOY: {key_str} -> {mapped_xbox_button} [CONVERTED + PASS-THROUGH] [{focus_status}]")
                         else:
-                            # Safe mode - always allow original input through
-                            if self.kb2joy_suppression_active:
-                                self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED + PASS-THROUGH]")
-                            else:
-                                self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED]")
-                            return True
-                    break
+                            self._add_log(f"KB2JOY: {key_str} -> {mapped_xbox_button} [CONVERTED] [{focus_status}]")
+                        return True
             
             # Key not mapped - always allow it through
             if self.kb2joy_debug_mode:
@@ -3635,37 +4696,39 @@ Notes:
         if not self.kb2joy_enabled or self.kb2joy_capture_mode:
             return True  # Allow input to pass through, keep listener active
         
+        # Check if bot should work (process focus)
+        if hasattr(self, 'process_focus_enabled') and self.process_focus_enabled:
+            if not getattr(self, 'is_target_process_focused', True):
+                return True  # Allow ALL keys through if target process not focused
+        
         try:
             # Convert key to string representation
             key_str = self._key_to_string(key)
             
-            # Check if this key is mapped to any Xbox button
-            is_mapped = False
+            # Check if this SPECIFIC key is mapped to any Xbox button
+            mapped_xbox_button = None
             for xbox_button, mapped_input in self.kb2joy_mappings.items():
                 if mapped_input == key_str:
-                    is_mapped = True
-                    # Send Xbox controller input
-                    button = self.virtual_controller.get_button_from_string(xbox_button)
-                    if button:
-                        self.virtual_controller.press_button(button, duration=0.1)
-                        
-                        # Check if we should suppress the input
-                        if self.kb2joy_suppress_enabled:
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [ATTEMPTING BLOCK]")
-                            # Try to suppress but be prepared to fall back
-                            try:
-                                return False  # Attempt suppression
-                            except:
-                                # If suppression fails, log and continue without suppression
-                                self._add_log(f"KB2JOY: Suppression failed for {key_str}, switching to fallback mode")
-                                self._switch_to_fallback_mode()
-                                return True
-                        else:
-                            self._add_log(f"KB2JOY: {key_str} -> {xbox_button} [CONVERTED]")
-                            return True   # Allow mapped keys to pass through
+                    mapped_xbox_button = xbox_button
                     break
             
-            # Key not mapped - always allow it to pass through
+            if mapped_xbox_button:
+                # This key IS mapped - send Xbox controller input
+                button = self.virtual_controller.get_button_from_string(mapped_xbox_button)
+                if button:
+                    self.virtual_controller.press_button(button, duration=0.1)
+                    
+                    focus_status = "FOCUSED" if getattr(self, 'is_target_process_focused', True) else "NOT FOCUSED"
+                    
+                    # Only suppress THIS SPECIFIC MAPPED KEY if suppression enabled
+                    if self.kb2joy_suppress_enabled and self.kb2joy_suppress_input_var.get():
+                        self._add_log(f"KB2JOY: {key_str} -> {mapped_xbox_button} [BLOCKED] [{focus_status}]")
+                        return False  # Block ONLY this mapped key
+                    else:
+                        self._add_log(f"KB2JOY: {key_str} -> {mapped_xbox_button} [CONVERTED] [{focus_status}]")
+                        return True   # Allow even mapped keys through (pass-through mode)
+            
+            # This key is NOT mapped - ALWAYS allow through (never block unmapped keys)
             return True
                     
         except Exception as e:
@@ -3772,34 +4835,62 @@ Notes:
     
     def _on_kb2joy_mouse_click(self, x, y, button, pressed):
         """Handle mouse click events. Returns False to suppress input if converted."""
+        # Debug log to see if handler is being called
+        if self.kb2joy_debug_mode:
+            self._add_log(f"🖱️ Mouse click handler called: button={button}, pressed={pressed}, enabled={self.kb2joy_enabled}")
+        
         if not self.kb2joy_enabled or self.kb2joy_capture_mode or not pressed:
             return True  # Allow input to pass through
-        
+
+        # Check if bot should work (process focus)
+        if hasattr(self, 'process_focus_enabled') and self.process_focus_enabled:
+            if not getattr(self, 'is_target_process_focused', True):
+                return True  # Allow ALL inputs through if target process not focused
+
         try:
             # Convert mouse button to string
             button_str = f"mouse_{button.name.lower()}"
             
+            if self.kb2joy_debug_mode:
+                self._add_log(f"🖱️ Converted mouse button: {button_str}")
+
             # Check if this mouse button is mapped
             for xbox_button, mapped_input in self.kb2joy_mappings.items():
                 if mapped_input == button_str:
+                    self._add_log(f"🎯 Mouse mapping found: {button_str} -> {xbox_button}")
+                    
                     # Send Xbox controller input
                     controller_button = self.virtual_controller.get_button_from_string(xbox_button)
                     if controller_button:
-                        self.virtual_controller.press_button(controller_button, duration=0.1)
+                        self._add_log(f"🎮 Pressing controller button: {controller_button}")
                         
-                        # For mouse, we always allow the input to pass through to avoid losing mouse control
-                        # We only convert to controller input but don't block the original
-                        self._add_log(f"KB2JOY: {button_str} -> {xbox_button} [MOUSE CONVERTED - original input preserved]")
+                        # Check if virtual controller is connected
+                        if not self.virtual_controller.is_connected():
+                            self._add_log(f"❌ Virtual controller not connected!")
+                            return True
+                        
+                        success = self.virtual_controller.press_button(controller_button, duration=0.1)
+                        
+                        focus_status = "FOCUSED" if getattr(self, 'is_target_process_focused', True) else "NOT FOCUSED"
+                        
+                        if success:
+                            # For mouse, we always allow the input to pass through to avoid losing mouse control
+                            # We only convert to controller input but don't block the original
+                            self._add_log(f"✅ KB2JOY: {button_str} -> {xbox_button} [MOUSE CONVERTED - original preserved] [{focus_status}]")
+                        else:
+                            self._add_log(f"❌ Failed to press controller button: {xbox_button}")
                         return True  # Always allow mouse input to pass through for safety
-            
+                    else:
+                        self._add_log(f"❌ Invalid controller button: '{xbox_button}' - available buttons: {self.virtual_controller.get_available_buttons()}")
+
             # Mouse button not mapped, allow it to pass through
+            if self.kb2joy_debug_mode:
+                self._add_log(f"🖱️ Mouse button {button_str} not mapped - allowing through")
             return True
                         
         except Exception as e:
             self._add_log(f"Error processing mouse click: {e}")
-            return True  # Allow input on error
-    
-    def _start_suppression_monitoring(self):
+            return True  # Allow input on error    def _start_suppression_monitoring(self):
         """Start periodic monitoring of suppression system"""
         if hasattr(self, 'kb2joy_monitor_timer') and self.kb2joy_monitor_timer:
             self.root.after_cancel(self.kb2joy_monitor_timer)
@@ -4348,6 +5439,33 @@ Notes:
                 
         except Exception as e:
             self._add_log(f"Note: No saved KB2JOY mappings found ({e})")
+    
+    def _get_available_configs(self):
+        """Get list of available configuration files."""
+        try:
+            configs_dir = "configs"
+            if not os.path.exists(configs_dir):
+                os.makedirs(configs_dir)
+                return ["No configs found"]
+            
+            config_files = [f for f in os.listdir(configs_dir) if f.endswith('.json')]
+            return config_files if config_files else ["No configs found"]
+        except Exception as e:
+            self._add_log(f"Error getting config list: {e}")
+            return ["Error loading configs"]
+    
+    def _refresh_config_list(self):
+        """Refresh the configuration selection dropdown."""
+        try:
+            config_files = self._get_available_configs()
+            self.config_selection.configure(values=config_files)
+            if config_files and config_files[0] != "No configs found":
+                # Try to keep current selection if it still exists
+                current = self.config_selection.get()
+                if current not in config_files:
+                    self.config_selection.set(config_files[0])
+        except Exception as e:
+            self._add_log(f"Error refreshing config list: {e}")
     
     def run(self):
         """Start the GUI application."""

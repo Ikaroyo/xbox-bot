@@ -1,0 +1,86 @@
+{
+  "version": "1.0.0",
+  "window_config": {
+    "window_title": "Saint Seiya: Legend of Justice",
+    "target_width": 599,
+    "target_height": 1075
+  },
+  "bot_config": {
+    "loop_delay": 0.1,
+    "action_cooldown": 1.0,
+    "capture_area_width": 30,
+    "capture_area_height": 30
+  },
+  "joystick_config": {
+    "action_delay": 1.0,
+    "auto_focus": true
+  },
+  "detection_rules": [
+    {
+      "name": "seed_complete_1",
+      "template": "seed_complete.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "mouse",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "seed_complete_2",
+      "template": "seed_complete_2.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "mouse",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "seed_xp",
+      "template": "seed_xp.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "mouse",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "seed_gold",
+      "template": "seed_gold.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "mouse",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "seed_xp_pink",
+      "template": "seed_xp_pink.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "mouse",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    }
+  ],
+  "last_saved": "2025-09-28T19:41:00.247981"
+}

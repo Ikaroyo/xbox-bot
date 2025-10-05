@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "window_config": {
+    "window_title": "Xbox",
+    "target_width": 1280,
+    "target_height": 720
+  },
+  "bot_config": {
+    "loop_delay": 0.1,
+    "action_cooldown": 1.0,
+    "capture_area_width": 30,
+    "capture_area_height": 30
+  },
+  "joystick_config": {
+    "action_delay": 1.0,
+    "auto_focus": true
+  },
+  "detection_rules": [],
+  "last_saved": "2025-10-05T19:41:56.606536"
+}

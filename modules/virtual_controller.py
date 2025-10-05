@@ -7,11 +7,23 @@ Provides simplified methods for button presses and joystick movements.
 
 import vgamepad as vg
 import time
+import random
 from typing import Optional, Union, List, Tuple
 from enum import Enum
 import win32api
 import win32con
 import win32gui
+
+# Additional constants for PostMessage clicking
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+WM_RBUTTONDOWN = 0x0204
+WM_RBUTTONUP = 0x0205
+WM_MBUTTONDOWN = 0x0207
+WM_MBUTTONUP = 0x0208
+MK_LBUTTON = 0x0001
+MK_RBUTTON = 0x0002
+MK_MBUTTON = 0x0010
 
 
 class InputMode(Enum):
@@ -130,6 +142,9 @@ class XboxButton(Enum):
     RIGHT_THUMB = "RIGHT_THUMB"
     LEFT_JOYSTICK = "LEFT_JOYSTICK"
     RIGHT_JOYSTICK = "RIGHT_JOYSTICK"
+    # Trigger buttons
+    LT = "LT"
+    RT = "RT"
     # Left stick movement directions
     STICK_UP = "STICK_UP"
     STICK_DOWN = "STICK_DOWN"
@@ -335,7 +350,7 @@ class VirtualController:
     
     # === MOUSE INPUT METHODS ===
     
-    def click_mouse(self, button: Union[str, MouseButton] = MouseButton.LEFT, x: Optional[int] = None, y: Optional[int] = None) -> bool:
+    def click_mouse(self, button: Union[str, MouseButton] = MouseButton.LEFT, x: Optional[int] = None, y: Optional[int] = None, hwnd: Optional[int] = None) -> bool:
         """
         Click mouse button at current position or specified coordinates.
         
@@ -343,6 +358,7 @@ class VirtualController:
             button: Mouse button to click
             x: X coordinate (None for current position)
             y: Y coordinate (None for current position)
+            hwnd: Window handle for unfocused window clicking (optional)
             
         Returns:
             True if successful, False otherwise
@@ -362,9 +378,47 @@ class VirtualController:
                 if y is None:
                     y = current_y
             
-            # Move to position
+            # Add human-like random offset to coordinates (±3 pixels)
+            human_offset_x = random.randint(-3, 3)
+            human_offset_y = random.randint(-3, 3)
+            x += human_offset_x
+            y += human_offset_y
+            
+            # Always move cursor to target location first for visual feedback and accuracy
+            print(f"Moving cursor to ({x}, {y}) [offset: {human_offset_x}, {human_offset_y}] and clicking {button_str} button")
             win32api.SetCursorPos((x, y))
             
+            # Small delay to ensure cursor movement is complete
+            time.sleep(0.01)
+            
+            # Try PostMessage for unfocused window clicking if hwnd provided
+            if hwnd:
+                try:
+                    # Convert screen coordinates to client coordinates
+                    client_x, client_y = win32gui.ScreenToClient(hwnd, (x, y))
+                    lparam = (client_y << 16) | (client_x & 0xFFFF)
+                    
+                    # Map button to messages  
+                    if button_str == 'left':
+                        win32gui.PostMessage(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lparam)
+                        win32gui.PostMessage(hwnd, WM_LBUTTONUP, 0, lparam)
+                    elif button_str == 'right':
+                        win32gui.PostMessage(hwnd, WM_RBUTTONDOWN, MK_RBUTTON, lparam)
+                        win32gui.PostMessage(hwnd, WM_RBUTTONUP, 0, lparam)
+                    elif button_str == 'middle':
+                        win32gui.PostMessage(hwnd, WM_MBUTTONDOWN, MK_MBUTTON, lparam)
+                        win32gui.PostMessage(hwnd, WM_MBUTTONUP, 0, lparam)
+                    else:
+                        return False
+                    
+                    print(f"PostMessage click sent to window {hwnd} at client coords ({client_x}, {client_y}) after cursor move")
+                    return True
+                    
+                except Exception as e:
+                    print(f"PostMessage click failed, falling back to mouse_event: {e}")
+                    # Fall through to mouse_event method
+            
+            # Standard method - perform click at current cursor position (already moved above)
             # Map button to mouse events
             if button_str == 'left':
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
@@ -385,7 +439,7 @@ class VirtualController:
             print(f"Error clicking mouse {button} at ({x}, {y}): {e}")
             return False
     
-    def double_click_mouse(self, button: Union[str, MouseButton] = MouseButton.LEFT, x: Optional[int] = None, y: Optional[int] = None) -> bool:
+    def double_click_mouse(self, button: Union[str, MouseButton] = MouseButton.LEFT, x: Optional[int] = None, y: Optional[int] = None, hwnd: Optional[int] = None) -> bool:
         """
         Double-click mouse button.
         
@@ -398,9 +452,12 @@ class VirtualController:
             True if successful, False otherwise
         """
         try:
-            success1 = self.click_mouse(button, x, y)
-            time.sleep(0.05)  # Small delay between clicks
-            success2 = self.click_mouse(button, x, y)
+            # Add small random delay between clicks to simulate human timing
+            click_delay = random.uniform(0.05, 0.15)  # 50-150ms between clicks
+            
+            success1 = self.click_mouse(button, x, y, hwnd)
+            time.sleep(click_delay)  # Human-like delay between clicks
+            success2 = self.click_mouse(button, x, y, hwnd)
             return success1 and success2
             
         except Exception as e:
@@ -485,6 +542,24 @@ class VirtualController:
             return False
         
         try:
+            # Check if it's a trigger
+            if button == XboxButton.LT:
+                # Press left trigger
+                self.gamepad.left_trigger_float(value_float=1.0)
+                self.gamepad.update()
+                time.sleep(duration)
+                self.gamepad.left_trigger_float(value_float=0.0)
+                self.gamepad.update()
+                return True
+            elif button == XboxButton.RT:
+                # Press right trigger
+                self.gamepad.right_trigger_float(value_float=1.0)
+                self.gamepad.update()
+                time.sleep(duration)
+                self.gamepad.right_trigger_float(value_float=0.0)
+                self.gamepad.update()
+                return True
+            
             # Check if it's a stick movement
             stick_movements = {
                 XboxButton.STICK_UP: "up",
@@ -707,7 +782,7 @@ class VirtualController:
             print(f"Error resetting controller: {e}")
             return False
     
-    def execute_action(self, action: str, input_mode: InputMode = InputMode.CONTROLLER) -> bool:
+    def execute_action(self, action: str, input_mode: InputMode = InputMode.CONTROLLER, hwnd: Optional[int] = None) -> bool:
         """
         Execute an action based on input mode.
         
@@ -758,7 +833,7 @@ class VirtualController:
                     if len(parts) > 3:
                         x, y = int(parts[2]), int(parts[3])
                     
-                    return self.click_mouse(button, x, y)
+                    return self.click_mouse(button, x, y, hwnd)
                 
                 elif action.startswith('doubleclick'):
                     # Format: "doubleclick", "doubleclick:left:100:200"
@@ -771,7 +846,7 @@ class VirtualController:
                     if len(parts) > 3:
                         x, y = int(parts[2]), int(parts[3])
                     
-                    return self.double_click_mouse(button, x, y)
+                    return self.double_click_mouse(button, x, y, hwnd)
                 
                 elif action.startswith('move'):
                     # Format: "move:100:200"
