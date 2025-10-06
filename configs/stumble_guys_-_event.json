@@ -15,6 +15,98 @@
     "action_delay": 1.0,
     "auto_focus": true
   },
-  "detection_rules": [],
-  "last_saved": "2025-10-05T19:41:56.606536"
+  "detection_rules": [
+    {
+      "name": "left_event",
+      "template": "left_event.png",
+      "confidence": 0.8,
+      "action": "DPAD_RIGHT",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "find_event",
+      "template": "find_event.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "play_middle",
+      "template": "play_middle.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "start",
+      "template": "start.png",
+      "confidence": 0.8,
+      "action": "START",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "claim",
+      "template": "claim.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "claim_reward",
+      "template": "claim_reward.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "running",
+      "template": "running.png",
+      "confidence": 0.8,
+      "action": "STICK_UP:1",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    }
+  ],
+  "last_saved": "2025-10-05T21:14:17.093715"
 }

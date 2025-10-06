@@ -1637,7 +1637,8 @@ class StumbleBotApp:
                 debug_info += f"\nConfigured Rules:\n"
                 for rule in detection_rules:
                     status = "✓" if rule.enabled else "✗"
-                    template_path = os.path.join("templates", rule.template)
+                    templates_dir = self.config_manager.get_templates_dir()
+                    template_path = os.path.join(templates_dir, rule.template)
                     template_exists = "EXISTS" if os.path.exists(template_path) else "MISSING"
                     debug_info += f"  {status} {rule.name}: {rule.template} ({template_exists}) -> {rule.action}\n"
             
@@ -1810,7 +1811,8 @@ Click "Debug Info" for current status information.
         try:
             if 0 <= rule_index < len(self.current_rules):
                 rule = self.current_rules[rule_index]
-                template_path = os.path.join("templates", rule.template)
+                templates_dir = self.config_manager.get_templates_dir()
+                template_path = os.path.join(templates_dir, rule.template)
                 
                 # Ensure .png extension
                 if not template_path.endswith('.png'):
@@ -2296,10 +2298,10 @@ Click "Debug Info" for current status information.
                     return
             
             # Check if template file exists
-            template_path = os.path.join("templates", template)
+            templates_dir = self.config_manager.get_templates_dir()
             if not template.endswith('.png'):
                 template += '.png'
-                template_path = os.path.join("templates", template)
+            template_path = os.path.join(templates_dir, template)
             
             if not os.path.exists(template_path):
                 if not messagebox.askyesno("Template Missing", 
@@ -2643,7 +2645,7 @@ Click "Debug Info" for current status information.
                     filename = os.path.basename(file_path)
                     name_without_ext = os.path.splitext(filename)[0]
                     
-                    # Convert to PNG if needed and copy to templates folder
+                    # Convert to PNG if needed and copy to config-specific templates folder
                     target_path = os.path.join(templates_dir, f"{name_without_ext}.png")
                     
                     # Check if target already exists
@@ -3384,7 +3386,8 @@ Click "Debug Info" for current status information.
             import cv2
             from PIL import Image, ImageTk
             
-            template_path = os.path.join("templates", template_filename)
+            templates_dir = self.config_manager.get_templates_dir()
+            template_path = os.path.join(templates_dir, template_filename)
             
             if not os.path.exists(template_path):
                 self.show_centered_messagebox("Template Not Found", f"Template file not found: {template_path}", "error")
@@ -4371,7 +4374,8 @@ Notes:
         try:
             if 0 <= rule_index < len(self.current_rules):
                 rule = self.current_rules[rule_index]
-                template_path = os.path.join("templates", rule.template)
+                templates_dir = self.config_manager.get_templates_dir()
+                template_path = os.path.join(templates_dir, rule.template)
                 
                 if not template_path.endswith('.png'):
                     template_path += '.png'

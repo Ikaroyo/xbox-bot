@@ -799,7 +799,25 @@ class VirtualController:
                 if ',' in action and ':' in action:
                     return self.execute_sequence(action)
                 else:
-                    # Single button press
+                    # Single button press (might include duration)
+                    if ':' in action and not ',' in action:
+                        # Single button with duration (e.g., "STICK_UP:1")
+                        parts = action.split(':')
+                        if len(parts) == 2:
+                            button_name, duration_str = parts
+                            try:
+                                duration = float(duration_str)
+                                button = self.get_button_from_string(button_name)
+                                if button:
+                                    return self.press_button(button, duration)
+                                else:
+                                    print(f"Unknown controller button: {button_name}")
+                                    return False
+                            except ValueError:
+                                print(f"Invalid duration in action: {action}")
+                                return False
+                    
+                    # Simple button press without duration
                     button = self.get_button_from_string(action)
                     if button:
                         return self.press_button(button)
