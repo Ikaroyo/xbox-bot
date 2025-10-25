@@ -16,3 +16,6 @@ logs/
 debug*/
 # Ignore virtual environment folders
 env*/
+# Ignore configs and templates folders
+configs*/
+templates*/
