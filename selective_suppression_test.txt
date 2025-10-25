@@ -1,0 +1,35 @@
+====================================
+SELECTIVE KEY SUPPRESSION TEST
+====================================
+
+The app has been updated to suppress ONLY mapped keys instead of the entire keyboard!
+
+HOW TO TEST:
+1. Open your bot application (it should be running now)
+2. Go to the KB2JOY tab
+3. Add a key mapping (e.g., map 'w' to 'left_stick_up')
+4. Enable KB2JOY with suppression enabled
+5. Test the behavior:
+
+EXPECTED BEHAVIOR:
+✅ Mapped keys (like 'w') will be:
+   - Converted to Xbox controller input
+   - Suppressed (blocked from reaching other applications)
+
+✅ Unmapped keys (like 'a', 'q', 'e', etc.) will:
+   - Pass through normally to other applications
+   - NOT be suppressed or blocked
+
+WHAT WAS FIXED:
+- Removed pynput's global suppression (suppress=True) which blocked ALL keys
+- Implemented Windows low-level keyboard hook for selective suppression
+- Only keys that are mapped in KB2JOY will be suppressed
+- All other keys work normally
+
+TECHNICAL DETAILS:
+- Uses Windows SetWindowsHookEx with WH_KEYBOARD_LL
+- Converts mapped key strings to VK codes for precise matching
+- Hook procedure only blocks keys that match mapped VK codes
+- Graceful fallback to conversion-only mode if hook fails
+
+If you test this now, only the keys you map should be suppressed while all other keys continue to work normally!

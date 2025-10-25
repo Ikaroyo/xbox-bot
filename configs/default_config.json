@@ -1,0 +1,77 @@
+{
+  "version": "1.0.0",
+  "window_config": {
+    "window_title": "Xbox",
+    "target_width": 1280,
+    "target_height": 720
+  },
+  "bot_config": {
+    "loop_delay": 0.1,
+    "action_cooldown": 1.0,
+    "capture_area_width": 30,
+    "capture_area_height": 30
+  },
+  "joystick_config": {
+    "action_delay": 1.0,
+    "auto_focus": true
+  },
+  "detection_rules": [
+    {
+      "name": "lose",
+      "template": "lose.png",
+      "confidence": 0.8333333333333334,
+      "action": "START",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "claimi",
+      "template": "claim.png",
+      "confidence": 0.8333333333333334,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "error",
+      "template": "error.png",
+      "confidence": 0.8333333333333334,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "logged",
+      "template": "logged.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "push",
+      "template": "push.png",
+      "confidence": 0.8,
+      "action": "A",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "game_running",
+      "template": "game_running.png",
+      "confidence": 0.8,
+      "action": "STICK_UP:3,A:1",
+      "input_mode": "controller",
+      "enabled": true
+    },
+    {
+      "name": "ready",
+      "template": "ready.png",
+      "confidence": 0.8,
+      "action": "Y",
+      "input_mode": "controller",
+      "enabled": true
+    }
+  ],
+  "last_saved": "2025-09-23T00:15:04.575402"
+}

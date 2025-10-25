@@ -1,0 +1,57 @@
+## ✅ **Window Reference Fix Applied!**
+
+### 🔧 **Problem Identified:**
+The coordinate conversion was failing because it was trying to use `window_manager.current_window` (which was `None`) instead of the bot thread's actual current window stored in `self._current_window`.
+
+### 🛠️ **Root Cause:**
+- **Bot Thread**: Stores its target window in `self._current_window` 
+- **Window Manager**: Has separate `current_window` property that wasn't set
+- **Coordinate Code**: Was calling `get_window_rect()` without window parameter, defaulting to window manager's `current_window` (None)
+
+### 🎯 **Solution Applied:**
+
+#### **1. Fixed Window Reference for Coordinates:**
+```python
+# Before: window_manager.get_window_rect()  # Uses window_manager.current_window (None)
+# After:  window_manager.get_window_rect(self._current_window)  # Uses bot's actual window
+```
+
+#### **2. Fixed Window Handle for PostMessage:**
+```python
+# Before: window_manager.current_window.get('hwnd')  # None
+# After:  self._current_window.get('hwnd')  # Bot's actual window handle
+```
+
+#### **3. Enhanced Debug Logging:**
+- Shows if window manager/current window available
+- Reports window handle for unfocused clicking
+- Clearer error messages for troubleshooting
+
+### 🧪 **Expected Results:**
+
+#### **Successful Coordinate Conversion:**
+```
+OLD: DEBUG: No window rect available - using original coords (370, 541)
+NEW: DEBUG: Screenshot coords (370, 541) + Window offset (599, 1075) -> Absolute coords (969, 1616)
+```
+
+#### **Working PostMessage Clicks:**
+```
+NEW: DEBUG: Using window handle 12345 for unfocused clicking
+NEW: PostMessage click sent to window 12345 at client coords (370, 541)
+```
+
+#### **Proper Window-Relative Clicking:**
+```
+NEW: MOUSE action executed: click:left:969:1616 at (969, 1616) (rule: seed_xp_pink)
+```
+
+### 🎯 **Key Benefits:**
+- ✅ **Proper coordinate conversion** - Uses bot's actual target window
+- ✅ **Window-relative clicking** - Clicks adjust for window position  
+- ✅ **Unfocused window support** - PostMessage with correct window handle
+- ✅ **Better debugging** - Clear logs show coordinate calculations
+
+**Now your bot should click at the correct window-relative positions!** 🎯
+
+The coordinates should now properly convert from screenshot coordinates to absolute screen coordinates, accounting for your game window's actual position on screen.

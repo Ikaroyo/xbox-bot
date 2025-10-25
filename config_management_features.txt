@@ -1,0 +1,66 @@
+## ✅ **Configuration Management Features Added!**
+
+### 🎯 **New Features Implemented:**
+
+#### **1. Remember Last Loaded Config**
+- ✅ **Auto-Save to Last Config**: When you save, it defaults to the last loaded config file
+- ✅ **Tracks Config Path**: App remembers which config file was last loaded
+- ✅ **Smart Save Behavior**: No need to re-specify filename each time
+
+#### **2. Configuration Selection Dropdown**
+- ✅ **Config Dropdown**: Select from available config files before loading
+- ✅ **Auto-Refresh**: List updates when new configs are saved
+- ✅ **Quick Loading**: Load configs directly from dropdown selection
+- ✅ **Refresh Button**: Manual refresh of config list
+
+#### **3. Radio Button Input Mode Selection**
+- ✅ **Radio Buttons**: Replaced dropdown with clear radio button interface
+- ✅ **Three Options**: Controller, Keyboard, Mouse
+- ✅ **Visual Clarity**: Better visual indication of selected mode
+- ✅ **Proper Grouping**: All options visible at once
+
+### 🔄 **How It Works Now:**
+
+#### **Save Configuration:**
+- **First Save**: Prompts for filename, remembers the choice
+- **Subsequent Saves**: Automatically saves to the last loaded config
+- **No Re-prompting**: Streamlined save experience
+
+#### **Load Configuration:**
+- **Dropdown Selection**: Choose from available configs in dropdown
+- **Click Load**: Loads the selected config immediately
+- **Fallback Dialog**: If no selection, shows traditional file picker
+- **Auto-Update List**: Dropdown refreshes when configs change
+
+#### **Input Mode Selection:**
+```
+OLD: [Dropdown ▼] controller ▼
+NEW: ○ Controller  ● Keyboard  ○ Mouse
+```
+
+### 📝 **Expected User Experience:**
+
+#### **Configuration Workflow:**
+1. **Create Rules**: Set up your detection rules
+2. **Save Config**: First time saves with name, remembers choice
+3. **Edit Rules**: Make changes to your setup  
+4. **Quick Save**: Just click Save - no filename prompt
+5. **Switch Configs**: Use dropdown to select different config
+6. **Load Instantly**: Click Load to switch configurations
+
+#### **Input Mode Workflow:**
+1. **Visual Selection**: See all three options at once
+2. **Click Choice**: Single click to select mode
+3. **Immediate Update**: UI updates instantly for selected mode
+
+### 🎮 **Benefits:**
+
+- ✅ **Faster Workflow**: No repetitive filename prompts
+- ✅ **Better Organization**: Easy config switching via dropdown
+- ✅ **Clearer UI**: Radio buttons show all options clearly
+- ✅ **Streamlined Saves**: Remember and reuse last config choice
+- ✅ **Visual Feedback**: Immediately see which mode is selected
+
+**Your configuration management is now much more user-friendly and efficient!** ⚡
+
+The app remembers your choices and makes switching between different bot configurations quick and easy.

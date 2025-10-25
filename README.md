@@ -1,205 +1,192 @@
-# Xbox Remote Play Bot
+# Stumble Bot - Game Automation Tool
 
-A modern Python bot for Xbox Remote Play that simulates Xbox controller inputs with image-based game state recognition. Designed specifically for games like Stumble Guys but can be adapted for other games.
+Un bot de automatización modular para juegos con interfaz gráfica desarrollado en Python, que utiliza visión por computadora (OpenCV) para la detección de estados del juego y simula la entrada de un control Xbox 360.
 
-## Features
+## Características Principales
 
-- **Xbox Controller Simulation**: True Xbox controller input simulation using XInput (with keyboard fallback)
-- **Image Recognition**: OpenCV-based template matching for reliable game state detection
-- **Modern GUI**: User-friendly interface with separate tabs for running and configuration
-- **Template Configuration**: Easy button/state configuration by capturing screenshots around cursor
-- **Real-time Status**: Live bot status and statistics display
-- **Adaptive Logic**: Smart bot behavior that adapts to different game states
+- **Detección Visual**: Utiliza OpenCV para detectar plantillas de imagen en lugar de píxeles fijos
+- **Control Virtual**: Simula un control Xbox 360 completo usando vgamepad
+- **Interfaz Gráfica**: GUI moderna desarrollada con CustomTkinter
+- **Gestión de Ventanas**: Encuentra, enfoca y redimensiona automáticamente la ventana del juego
+- **Sistema Modular**: Arquitectura bien estructurada y extensible
+- **Configuración Persistente**: Guarda y carga configuraciones en formato JSON
 
-## Installation
+## Tecnologías Utilizadas
 
-1. **Install Python 3.8 or higher**
+- **GUI**: CustomTkinter (interfaz moderna y responsiva)
+- **Visión por Computadora**: OpenCV, NumPy
+- **Simulación de Control**: vgamepad (Xbox 360 virtual)
+- **Gestión de Ventanas**: pygetwindow, win32gui
+- **Captura de Pantalla**: Pillow (PIL)
 
-2. **Clone or download this repository**
+## Instalación
 
-3. **Install required packages:**
+### Requisitos Previos
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+- Windows 10/11 (requerido para vgamepad y win32gui)
+- Python 3.7 o superior
+- Visual C++ Redistributable (para vgamepad)
 
-4. **For Xbox controller simulation (optional but recommended):**
-   - Make sure you have XInput drivers installed (usually included with Windows)
-   - For best results, connect a physical Xbox controller first to ensure drivers are present
+### Instalación de Dependencias
 
-## Usage
+1. Clona o descarga el repositorio
+2. Navega al directorio del proyecto
+3. Instala las dependencias:
 
-### Initial Setup
-
-1. **Start Xbox Remote Play** and connect to your Xbox
-2. **Launch the bot:**
-   ```bash
-   python xbox_remote_bot.py
-   ```
-
-### Configuration
-
-1. **Switch to the Configuration tab**
-2. **Capture templates for each game state:**
-
-   - Enter a template name (e.g., "main_menu", "game_running", "game_lost")
-   - Position your cursor over the button/element you want to detect
-   - Click "Capture Template (F9)" or press F9
-   - Adjust confidence threshold if needed (0.8 is usually good)
-   - Repeat for all important game states
-
-3. **Recommended templates to capture:**
-
-   - `main_menu`: The "Play" or "Join Game" button
-   - `game_running`: Some element that's only visible during gameplay
-   - `game_lost`: The "Try Again" or similar button when you lose
-   - `game_results`: Results screen elements
-   - `get_reward`: Reward collection buttons
-
-4. **Save your configuration**
-
-### Running the Bot
-
-1. **Switch to the Run tab**
-2. **Set the target window** (usually "Xbox" or the specific game title)
-3. **Adjust settings:**
-   - Check Interval: How often to check game state (1.5s recommended)
-4. **Click "Start Bot"**
-
-The bot will:
-
-- Automatically detect the current game state
-- Take appropriate actions (start games, simulate movement, collect rewards)
-- Display real-time status and statistics
-- Continue running until stopped
-
-## Game State Logic
-
-The bot operates based on detected game states:
-
-- **Main Menu**: Automatically starts new games
-- **Game Running**: Simulates realistic player movement and actions
-- **Game Lost**: Returns to menu to start a new game
-- **Game Results**: Waits on results screen or continues
-- **Get Reward**: Automatically collects rewards
-
-## Controller Simulation
-
-### XInput (Recommended)
-
-- Provides true Xbox controller simulation
-- Works with all Xbox Remote Play games
-- More reliable and harder to detect
-
-### Keyboard Fallback
-
-- Falls back to keyboard simulation if XInput fails
-- Maps controller buttons to keyboard keys
-- May not work with all games
-
-## Configuration File
-
-Settings are saved in `bot_config.json`:
-
-```json
-{
-  "window_title": "Xbox",
-  "check_interval": 1.5,
-  "templates": {
-    "main_menu": {
-      "path": "templates/main_menu.png",
-      "confidence": 0.8,
-      "size": [100, 100],
-      "created": "2024-01-01 12:00:00"
-    }
-  },
-  "controller_settings": {
-    "stick_deadzone": 0.1,
-    "trigger_threshold": 0.5
-  }
-}
+```bash
+pip install -r requirements.txt
 ```
 
-## Troubleshooting
+### Ejecutar la Aplicación
 
-### Common Issues
+```bash
+python main.py
+```
 
-1. **"Window not found"**
+## Estructura del Proyecto
 
-   - Make sure Xbox Remote Play is running
-   - Check the window title matches exactly
-   - Use the "Detect" button to auto-find Xbox windows
+```
+stumble-bot/
+├── main.py                 # Punto de entrada de la aplicación
+├── app.py                  # Clase principal de la GUI
+├── requirements.txt        # Dependencias de Python
+├── modules/                # Módulos del bot
+│   ├── __init__.py
+│   ├── window_manager.py   # Gestión de ventanas
+│   ├── image_detector.py   # Detección de plantillas
+│   ├── virtual_controller.py # Control Xbox virtual
+│   ├── bot_thread.py       # Hilo principal del bot
+│   └── config_manager.py   # Gestión de configuración
+├── templates/              # Plantillas de imagen capturadas
+├── configs/                # Archivos de configuración JSON
+└── logs/                   # Archivos de registro
+```
 
-2. **"No templates configured"**
+## Uso de la Aplicación
 
-   - You need to capture at least one template before running
-   - Go to Configuration tab and capture game state templates
+### Pestaña "Run"
 
-3. **Templates not matching**
+- **Botón Start/Stop**: Inicia o detiene el bot
+- **Panel de Logs**: Muestra la actividad del bot en tiempo real
+- **Botón Clear Logs**: Limpia el historial de logs
 
-   - Lower the confidence threshold (try 0.6-0.7)
-   - Recapture templates with the current game resolution
-   - Test templates using the "Test Template" button
+### Pestaña "Configuration"
 
-4. **Controller not working**
-   - Make sure XInput drivers are installed
-   - Try connecting a physical Xbox controller first
-   - Check if keyboard fallback mode is working
+#### Configuración de Ventana
+- **Window Title**: Nombre exacto de la ventana del juego (por defecto "Xbox")
+- **Target Size**: Dimensiones a las que redimensionar la ventana (1280x720)
 
-### Performance Tips
+#### Reglas de Detección
+- **Lista de Reglas**: Muestra todas las reglas configuradas
+- **Gestión de Reglas**: Agregar, editar y eliminar reglas
+- **Detalles de Regla**:
+  - Nombre único para identificar la regla
+  - Plantilla de imagen asociada
+  - Umbral de confianza (0.7 - 1.0)
+  - Acción del control a ejecutar
 
-- Keep the Xbox Remote Play window active and visible
-- Use a consistent resolution/window size
-- Capture templates at the same resolution you'll be playing
-- Adjust check interval based on game speed (faster games need shorter intervals)
+#### Captura de Plantillas
+1. Ingresa un nombre para la plantilla
+2. Haz clic en "Capture Template"
+3. La aplicación se minimizará
+4. Haz clic en el área del juego que quieres detectar
+5. La imagen se guardará automáticamente
 
-### Safety Features
+#### Configuración del Bot
+- **Loop Delay**: Tiempo entre ciclos de detección
+- **Action Cooldown**: Tiempo de espera después de ejecutar una acción
+- **Capture Area**: Tamaño del área para captura de plantillas
 
-- F10 hotkey to emergency stop (if using keyboard fallback)
-- Bot automatically stops if window becomes inactive
-- All actions are logged for debugging
+### Pestaña "Joystick"
 
-## Customization
+- **Control Manual**: Botones virtuales del control Xbox
+- **Temporizador**: Configura un retraso antes de ejecutar la acción
+- **Auto-focus**: Enfoca automáticamente la ventana del juego antes de la acción
 
-### Adding New Game States
+## Configuraciones
 
-1. Capture new templates in the Configuration tab
-2. The bot will automatically try to handle unknown states
-3. For custom logic, modify `bot_logic.py`
+### Guardar/Cargar Configuraciones
 
-### Adjusting Behavior
+- **Save Config**: Guarda la configuración actual con un nombre personalizado
+- **Load Config**: Carga una configuración guardada previamente
+- **Export Config**: Exporta la configuración a un archivo externo
+- **Import Config**: Importa una configuración desde un archivo externo
 
-Edit `bot_logic.py` to customize:
+### Formato de Configuración
 
-- Movement patterns and timing
-- Action probabilities
-- Response to different game states
+Las configuraciones se guardan en formato JSON e incluyen:
+- Configuración de ventana (título, dimensiones)
+- Reglas de detección (plantillas, confianza, acciones)
+- Configuración del bot (tiempos, área de captura)
+- Configuración del joystick (retraso, auto-enfoque)
 
-### Controller Mappings
+## Flujo de Trabajo Típico
 
-Edit `xbox_controller.py` to modify:
+1. **Configurar Ventana**: Especifica el título de la ventana del juego
+2. **Crear Plantillas**: Captura imágenes de los estados del juego que quieres detectar
+3. **Definir Reglas**: Asocia cada plantilla con una acción del control
+4. **Ajustar Configuración**: Optimiza tiempos y umbrales de confianza
+5. **Probar el Bot**: Inicia el bot y observa los logs
+6. **Guardar Configuración**: Guarda la configuración para uso futuro
 
-- Button mappings for keyboard fallback
-- Controller sensitivity settings
-- Action durations
+## Solución de Problemas
 
-## File Structure
+### El bot no encuentra la ventana
+- Verifica que el título de la ventana sea exacto
+- Usa "Test Window Detection" para verificar
+- Si hay múltiples ventanas, el bot mostrará las opciones disponibles
 
-- `xbox_remote_bot.py`: Main application with GUI
-- `xbox_controller.py`: Xbox controller simulation
-- `image_recognition.py`: OpenCV-based template matching
-- `bot_logic.py`: Game state handling and bot behavior
-- `templates/`: Directory for captured template images
-- `bot_config.json`: Configuration file (created automatically)
+### Las plantillas no se detectan
+- Ajusta el umbral de confianza (valores más bajos = menos estricto)
+- Asegúrate de que las plantillas sean lo suficientemente distintivas
+- Evita capturar áreas con elementos que cambian constantemente
 
-## Legal Disclaimer
+### El control virtual no funciona
+- Verifica que vgamepad esté instalado correctamente
+- Algunos juegos pueden requerir que reconozcan el control virtual primero
+- Prueba los botones desde la pestaña "Joystick" para verificar funcionamiento
 
-This bot is for educational and personal use only. Make sure you comply with the terms of service of any games or platforms you use it with. The developers are not responsible for any consequences of using this software.
+### Problemas de rendimiento
+- Aumenta el "Loop Delay" para reducir la carga de CPU
+- Reduce el tamaño de las plantillas capturadas
+- Limita el número de reglas activas
 
-## Contributing
+## Desarrollo y Extensión
 
-Feel free to submit issues and pull requests to improve the bot!
+### Arquitectura Modular
 
-## License
+Cada módulo tiene una responsabilidad específica:
 
-MIT License - see the code files for details.
+- **WindowManager**: Gestión de ventanas del sistema
+- **ImageDetector**: Procesamiento de imágenes y detección
+- **VirtualController**: Interfaz con el control virtual
+- **BotThread**: Lógica principal del bot en hilo separado
+- **ConfigManager**: Persistencia de configuración
+
+### Agregar Nuevas Características
+
+1. **Nuevos Botones**: Agregar a `XboxButton` enum en `virtual_controller.py`
+2. **Nuevos Detectores**: Extender `ImageDetector` con nuevos métodos
+3. **Nueva GUI**: Agregar pestañas o secciones en `app.py`
+
+## Limitaciones Conocidas
+
+- Diseñado específicamente para Windows
+- Requiere que el juego acepte entrada de XInput (Xbox controller)
+- La detección visual puede verse afectada por cambios en la resolución o configuración gráfica del juego
+- Algunos juegos anti-cheat pueden detectar la entrada virtual
+
+## Licencia y Descargo de Responsabilidad
+
+Este software es para fines educativos y de automatización personal. Los usuarios son responsables de cumplir con los términos de servicio de los juegos que utilizan. El uso indebido de herramientas de automatización puede resultar en suspensiones de cuenta o baneo.
+
+## Contribuciones
+
+Las contribuciones son bienvenidas. Por favor:
+
+1. Haz fork del repositorio
+2. Crea una rama para tu característica
+3. Realiza tus cambios
+4. Envía un pull request
+
+Para reportar bugs o solicitar características, usa el sistema de issues del repositorio.

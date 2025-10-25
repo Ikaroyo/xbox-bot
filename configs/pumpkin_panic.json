@@ -1,0 +1,138 @@
+{
+  "version": "1.0.0",
+  "window_config": {
+    "window_title": "Stumble Guys",
+    "target_width": 1280,
+    "target_height": 720
+  },
+  "bot_config": {
+    "loop_delay": 0.1,
+    "action_cooldown": 1.0,
+    "capture_area_width": 30,
+    "capture_area_height": 30
+  },
+  "joystick_config": {
+    "action_delay": 1.0,
+    "auto_focus": true
+  },
+  "detection_rules": [
+    {
+      "name": "reward",
+      "template": "reward.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "openreward",
+      "template": "openreward.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "ok",
+      "template": "ok.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "event",
+      "template": "event.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "play",
+      "template": "play.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "leave",
+      "template": "leave.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "level_up",
+      "template": "level_up.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "claim",
+      "template": "claim.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "controller",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    },
+    {
+      "name": "event_start",
+      "template": "event_start.png",
+      "confidence": 0.8,
+      "action": "click",
+      "input_mode": "mouse",
+      "enabled": true,
+      "is_cycle_marker": false,
+      "cycle_type": "none",
+      "cycle_name": "",
+      "expected_cycle_time": 0.0,
+      "cycle_tolerance": 0.3
+    }
+  ],
+  "last_saved": "2025-10-04T00:45:33.896403"
+}
